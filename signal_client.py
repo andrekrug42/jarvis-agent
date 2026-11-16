@@ -62,7 +62,12 @@ async def _request(method: str, path: str, base: str, headers: dict[str, str], t
         if response.status_code != 404:
             _effective_base = candidate
             break
-    response.raise_for_status()
+    if response.is_error:
+        raise httpx.HTTPStatusError(
+            f"{response.status_code} for url {response.url}: {response.text[:500]}",
+            request=response.request,
+            response=response,
+        )
     return response
 
 
@@ -97,8 +102,12 @@ def normalize(entry: dict) -> dict | None:
     group_id = group_info.get("groupId")
     group_name = group_info.get("name") or ""
     if group_id:
-        # Empfangene groupId ist die rohe base64-ID; Senden/Typing/Receipts erwarten das Präfix "group.".
-        group_recipient = group_id if group_id.startswith("group.") else f"group.{group_id}"
+        # Empfangene groupId ist die interne ID (base64 der rohen 32 Bytes, einfach kodiert).
+        # Senden/Typing/Receipts erwarten "group." + base64(internalId) (doppelt base64, siehe getRecipientType in signal-cli-rest-api).
+        if group_id.startswith("group."):
+            group_recipient = group_id
+        else:
+            group_recipient = "group." + base64.b64encode(group_id.encode()).decode()
         chat_key = f"group:{group_id}"
         chat_label = f'Gruppenchat "{group_name}"' if group_name else f"Gruppe {group_id}"
         recipients = [group_recipient]
