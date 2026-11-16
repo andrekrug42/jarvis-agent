@@ -44,7 +44,13 @@ def _truncate(text: str, limit: int = 240) -> str:
     return one_line if len(one_line) <= limit else one_line[: limit - 1] + "…"
 
 
-def build_envelope(message: dict[str, Any], files_info: list[dict[str, str]], log_lines: list[str]) -> str:
+def build_envelope(
+    message: dict[str, Any],
+    files_info: list[dict[str, str]],
+    log_lines: list[str],
+    audio_transcripts: list[str] | None = None,
+    failed_attachments: list[str] | None = None,
+) -> str:
     owner = os.environ.get("JARVIS_OWNER_NAME", "").strip()
     lines = ["[KONTEXT – nur für dich, nicht wörtlich zitieren]"]
     if owner:
@@ -57,11 +63,17 @@ def build_envelope(message: dict[str, Any], files_info: list[dict[str, str]], lo
     if log_lines:
         lines.append("Zuletzt in den anderen Chats besprochen:")
         lines.extend(f"- {entry}" for entry in log_lines)
+    if audio_transcripts:
+        lines.append("Sprachnachrichten (Transkript):")
+        lines.extend(f"- {entry}" for entry in audio_transcripts)
     if files_info:
         lines.append("Anhänge (file_id für die Tools describe_image / read_document):")
         for index, info in enumerate(files_info, 1):
             kind = "Bild" if info["content_type"].startswith("image/") else "Dokument"
             lines.append(f"- [{index}] {info['filename']} ({info['content_type']}, {kind}) file_id={info['file_id']}")
+    if failed_attachments:
+        lines.append("Anhänge, die nicht verarbeitet werden konnten:")
+        lines.extend(f"- {entry}" for entry in failed_attachments)
     lines.append(f"[NACHRICHT von {message['sender_name']}]")
     lines.append(message["text"] or "(nur Anhänge, kein Text)")
     return "\n".join(lines)
@@ -131,18 +143,29 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
         pass
 
     files_info: list[dict[str, str]] = []
+    audio_transcripts: list[str] = []
+    failed_attachments: list[str] = []
     for attachment in message["attachments"]:
-        data = await signal_client.download_attachment(attachment["id"])
-        file_id = await state_store.upload_attachment(attachment["filename"], attachment["content_type"], data)
-        files_info.append(
-            {"filename": attachment["filename"], "content_type": attachment["content_type"], "file_id": file_id}
-        )
+        try:
+            data = await signal_client.download_attachment(attachment["id"])
+            if attachment["content_type"].startswith("audio/"):
+                transcript = await state_store.transcribe_audio(attachment["filename"], data)
+                audio_transcripts.append(f"{attachment['filename']}: {transcript or '(kein Text erkannt)'}")
+                continue
+            file_id = await state_store.upload_attachment(attachment["filename"], attachment["content_type"], data)
+            files_info.append(
+                {"filename": attachment["filename"], "content_type": attachment["content_type"], "file_id": file_id}
+            )
+        except Exception as error:
+            failed_attachments.append(f"{attachment['filename']} ({attachment['content_type']}): {str(error)[:160]}")
 
     log_lines = [
         f"{entry.get('ts', '')} | {entry.get('chat', '')} | {entry.get('sender', '')}: {entry.get('summary', '')}"
         for entry in state.get("log", [])[-LOG_CONTEXT_ENTRIES:]
     ]
-    envelope = build_envelope(message, files_info, log_lines)
+    envelope = build_envelope(
+        message, files_info, log_lines, audio_transcripts=audio_transcripts, failed_attachments=failed_attachments
+    )
 
     chat_state = state.setdefault("chats", {}).setdefault(message["chat_key"], {})
     session_key = chat_state.get("session_key") or f"signal-chat:{message['chat_key']}"

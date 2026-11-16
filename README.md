@@ -34,13 +34,14 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
   (`start_session(idempotency_key="signal-chat:<chat>")`) – dadurch merkt sich JARVIS jedes Gespräch.
   Idempotency-Keys sorgen dafür, dass weder Sessions noch Nachrichten doppelt angelegt werden.
 - **Übergreifendes Gedächtnis**: Die Bridge führt ein Kurzprotokoll aller Chats (`log` in
-  `state_store`, als JSON-Datei in der Mistral-Files-API) und packt die letzten Einträge jeder
+  `state_store`, als JSON in einem Dokument der Mistral-Library `jarvis-bridge-state`) und packt die letzten Einträge jeder
   Nachricht als Kontext mit hinein. So weiß JARVIS, mit wem er schreibt und was mit den anderen
   Personen besprochen wurde.
 - **Bilder**: verstehen via `describe_image` (Vision), generieren via den eingebauten
   `image_generation`-Connector (läuft als Deployment, keine Anmeldung nötig). Generierte Bilder
   werden als Anhang zurück in den Signal-Chat geschickt.
 - **PDFs/Dokumente**: `read_document` (Mistral OCR, `mistral-ocr-latest`).
+- **Sprachnachrichten**: werden von der Bridge per Mistral Voxtral (`/v1/audio/transcriptions`) transkribiert und als Text in den Kontext-Block gepackt.
 
 ## Voraussetzungen
 

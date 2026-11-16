@@ -107,6 +107,25 @@ async def upload_attachment(file_name: str, content_type: str, data: bytes) -> s
     return await asyncio.to_thread(_upload_sync, file_name, content_type, data)
 
 
+def _transcribe_sync(file_name: str, data: bytes) -> str:
+    client = _mistral_client()
+    model = os.environ.get("JARVIS_AUDIO_MODEL", "voxtral-mini-latest")
+    try:
+        result = client.audio.transcriptions.complete(
+            model=model, file={"file_name": file_name, "content": data}, language="de"
+        )
+    except Exception:
+        upload = client.files.upload(file={"file_name": file_name, "content": data}, purpose="audio")
+        file_id = upload.id if not isinstance(upload, dict) else upload["id"]
+        result = client.audio.transcriptions.complete(model=model, file_id=file_id, language="de")
+    return (getattr(result, "text", "") or "").strip()
+
+
+async def transcribe_audio(file_name: str, data: bytes) -> str:
+    """Transkribiert eine Sprachnachricht (Audio) per Mistral Voxtral und gibt den Text zurück."""
+    return await asyncio.to_thread(_transcribe_sync, file_name, data)
+
+
 def _download_sync(file_id: str) -> bytes:
     client = _mistral_client()
     response = client.files.download(file_id=file_id)
