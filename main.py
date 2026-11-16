@@ -2,6 +2,8 @@ from mistralai import agents
 
 from agent_tools import describe_image, read_document
 
+import bridge  # noqa: F401  registriert den Workflow jarvis-signal-bridge im selben Worker
+
 INSTRUCTIONS = """Du bist JARVIS, der persönliche KI-Assistent des Account-Inhabers und seiner Familie – benannt nach dem Assistenten aus den Iron-Man-Filmen, aber bodenständig, hilfsbereit und prägnant.
 
 Du schreibst über Signal. Jede eingehende Nachricht kommt eingebettet in einen Kontext-Block:
