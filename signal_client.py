@@ -116,7 +116,7 @@ def normalize(entry: dict) -> dict | None:
     ]
     return {
         "key": f"{env.get('timestamp', 0)}:{source_uuid}:{dm.get('timestamp', 0)}",
-        "timestamp": env.get("timestamp") or dm.get("timestamp") or 0,
+        "timestamp": dm.get("timestamp") or env.get("timestamp") or 0,
         "chat_key": chat_key,
         "chat_label": chat_label,
         "sender_uuid": source_uuid,
@@ -125,7 +125,7 @@ def normalize(entry: dict) -> dict | None:
         "text": dm.get("message") or "",
         "attachments": attachments,
         "recipients": recipients,
-        "receipt_recipient": group_id if group_id else (source_number or source_uuid),
+        "receipt_recipients": [r for r in ([group_id] if group_id else [source_number, source_uuid]) if r],
     }
 
 
