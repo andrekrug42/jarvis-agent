@@ -11,6 +11,26 @@ LOG_LIMIT = 200
 PROCESSED_LIMIT = 500
 LOG_CONTEXT_ENTRIES = 30
 
+_agent_registered = False
+
+
+async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
+    """Registriert den Agenten einmalig beim Control Plane (idempotentes Upsert) und gibt den Queue-/Deployment-Namen zurück, an den er gebunden ist."""
+    global _agent_registered
+    if _agent_registered:
+        return agent_name
+    from mistralai.vibe_agents.agents_client.client import AgentsClient
+
+    base_url = os.environ.get("AGENTS_SDK_DEPLOY_CONTROL_PLANE_URL", "https://api.mistral.ai/v2/agents").rstrip("/")
+    preferred = os.environ.get("JARVIS_DEPLOYMENT_NAME", "").strip() or agent_name
+    async with AgentsClient(base_url=base_url, api_key=user_api_key, timeout_seconds=60) as client:
+        try:
+            response = await client.register_agent(agent_name=agent_name, workflow_name=agent_name, deployment_name=preferred)
+        except Exception:
+            response = await client.register_agent(agent_name=agent_name, workflow_name=agent_name)
+    _agent_registered = True
+    return response.deployment_name
+
 
 class BridgeInput(BaseModel):
     max_messages: int = 25
@@ -82,6 +102,8 @@ async def poll_signal_activity() -> list[dict[str, Any]]:
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=20), retry_policy_max_attempts=2)
 async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
+    global _agent_registered
+
     from mistralai import agents
 
     import signal_client
@@ -90,6 +112,7 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     agent_name = os.environ.get("JARVIS_AGENT_NAME", "jarvis")
     user_api_key = os.environ.get("JARVIS_AGENT_API_KEY", "").strip()
     if user_api_key:
+        await ensure_agent_registered(agent_name, user_api_key)
         agent = agents.Agent.load_from(agent_name=agent_name, api_key=user_api_key)
     else:
         token_path = os.environ.get("MISTRAL_SA_TOKEN_PATH", "")
@@ -124,6 +147,9 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     try:
         session = await agent.start_session(idempotency_key=session_key)
     except Exception:
+        if user_api_key:
+            _agent_registered = False
+            await ensure_agent_registered(agent_name, user_api_key)
         chat_state["session_epoch"] = int(chat_state.get("session_epoch", 0)) + 1
         session_key = f"signal-chat:{message['chat_key']}:e{chat_state['session_epoch']}"
         chat_state["session_key"] = session_key

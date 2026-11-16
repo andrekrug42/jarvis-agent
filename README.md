@@ -68,11 +68,13 @@ uv sync
 uv run --env-file .env agents info
 uv run --env-file .env python -c "import bridge"  # Bridge importieren (Syntax/Discovery)
 
-# 2. Agenten deployen – WICHTIG: nur `agents deploy` registriert die Agent-Entität
-#    (ein reines Workflows-Deployment via MCP tut das nicht; dann schlägt
-#    Agent.load_from(agent_name="jarvis") mit "Unknown agent name" fehl).
-uv run --env-file .env agents deploy . --name jarvis
-#    baut aus dem gepushten Commit (Dockerfile, CMD agents run-worker), wartet bis "live"
+# 2. Agenten-Deployment anlegen (reines Workflows-Deployment, z. B. via MCP/UI):
+#    deploy_workflow_deployment(deployment_name="jarvis", github_url=<repo>, revision=<SHA>,
+#    dockerfile_path="Dockerfile") – der Worker pollt die Queue "jarvis".
+#    Die Agent-Registrierung (POST /v2/agents/agents/register, Bindung Name → Queue "jarvis")
+#    übernimmt die Bridge selbst beim Worker-Start mit JARVIS_AGENT_API_KEY
+#    (bridge_worker.py → ensure_agent_registered); `agents deploy` ist nicht nötig.
+#    Alternativ geht auch: uv run --env-file .env agents deploy . --name jarvis
 ```
 
 Die **Bridge** (`jarvis-bridge`) wird dagegen als reines Workflows-Deployment angelegt,
