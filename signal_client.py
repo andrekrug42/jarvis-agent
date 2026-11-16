@@ -97,13 +97,17 @@ def normalize(entry: dict) -> dict | None:
     group_id = group_info.get("groupId")
     group_name = group_info.get("name") or ""
     if group_id:
+        # Empfangene groupId ist die rohe base64-ID; Senden/Typing/Receipts erwarten das Präfix "group.".
+        group_recipient = group_id if group_id.startswith("group.") else f"group.{group_id}"
         chat_key = f"group:{group_id}"
         chat_label = f'Gruppenchat "{group_name}"' if group_name else f"Gruppe {group_id}"
-        recipients = [group_id]
+        recipients = [group_recipient]
+        receipt_targets = [group_recipient]
     else:
         chat_key = f"dm:{source_uuid}"
         chat_label = f"1:1-Chat mit {source_name or source_number or source_uuid}"
         recipients = [source_uuid]
+        receipt_targets = [source_number, source_uuid]
     attachments = [
         {
             "id": att.get("id"),
@@ -125,7 +129,7 @@ def normalize(entry: dict) -> dict | None:
         "text": dm.get("message") or "",
         "attachments": attachments,
         "recipients": recipients,
-        "receipt_recipients": [r for r in ([group_id] if group_id else [source_number, source_uuid]) if r],
+        "receipt_recipients": [r for r in receipt_targets if r],
     }
 
 
