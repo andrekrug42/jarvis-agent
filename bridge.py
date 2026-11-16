@@ -231,7 +231,7 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
             except Exception as error:
                 last_error = error
                 if attempt < 2:
-                    await asyncio.sleep(10 * (attempt + 1))
+                    await asyncio.sleep(5 * (attempt + 1))
         raise last_error
 
     try:
