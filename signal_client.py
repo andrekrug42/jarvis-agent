@@ -1,9 +1,12 @@
 import base64
 import os
+from urllib.parse import quote
 
 import httpx
 
 RECEIVE_TIMEOUT_SECONDS = 30
+
+_effective_base: str | None = None
 
 
 def _b64decode(value: str) -> str:
@@ -39,6 +42,30 @@ def _config() -> tuple[str, str, dict[str, str]]:
     return base, number, headers
 
 
+def _base_candidates(base: str) -> list[str]:
+    # Falls der Reverse-Proxy das Pfad-Präfix nicht durchreicht, nochmal ohne Pfad versuchen.
+    candidates = [base]
+    if "://" in base:
+        scheme, rest = base.split("://", 1)
+        if "/" in rest:
+            candidates.append(f"{scheme}://{rest.split('/', 1)[0]}")
+    return candidates
+
+
+async def _request(method: str, path: str, base: str, headers: dict[str, str], timeout: float, **kwargs) -> httpx.Response:
+    global _effective_base
+    bases = [_effective_base] if _effective_base else _base_candidates(base)
+    response = None
+    for candidate in bases:
+        async with httpx.AsyncClient(timeout=timeout) as http:
+            response = await http.request(method, f"{candidate}{path}", headers=headers, **kwargs)
+        if response.status_code != 404:
+            _effective_base = candidate
+            break
+    response.raise_for_status()
+    return response
+
+
 def _allowed_sources() -> set[str] | None:
     raw = os.environ.get("SIGNAL_ALLOWED_SOURCES", "").strip()
     if not raw:
@@ -52,8 +79,8 @@ def _is_own_message(env: dict, own_number: str) -> bool:
 
 
 def normalize(entry: dict) -> dict | None:
-    """Formt einen v2/receive-Envelope in ein flaches Nachrichten-Dict um. None = ignorieren (z. B. Receipts, eigene Nachrichten)."""
-    env = entry.get("envelope") or {}
+    """Formt einen receive-Envelope in ein flaches Nachrichten-Dict um (v1: nackter Envelope, v2: {"envelope": ...}). None = ignorieren (z. B. Receipts, eigene Nachrichten)."""
+    env = entry.get("envelope") or entry
     dm = env.get("dataMessage")
     if not dm:
         return None
@@ -101,12 +128,10 @@ def normalize(entry: dict) -> dict | None:
 
 
 async def receive() -> list[dict]:
-    """ Holt neue Nachrichten von der Signal-REST-API ab (v2/receive dequeued). """
+    """ Holt neue Nachrichten von der Signal-REST-API ab (v1/receive dequeued). """
     base, number, headers = _config()
-    async with httpx.AsyncClient(timeout=RECEIVE_TIMEOUT_SECONDS) as http:
-        response = await http.get(f"{base}/v2/receive/{number}", headers=headers)
-        response.raise_for_status()
-        entries = response.json()
+    response = await _request("GET", f"/v1/receive/{number}", base, headers, RECEIVE_TIMEOUT_SECONDS)
+    entries = response.json()
     messages = []
     for entry in entries or []:
         message = normalize(entry)
@@ -117,14 +142,12 @@ async def receive() -> list[dict]:
 
 async def download_attachment(attachment_id: str) -> bytes:
     base, _, headers = _config()
-    async with httpx.AsyncClient(timeout=120) as http:
-        response = await http.get(f"{base}/v1/attachments/{attachment_id}", headers=headers)
-        response.raise_for_status()
-        return response.content
+    response = await _request("GET", f"/v1/attachments/{quote(attachment_id, safe='')}", base, headers, 120)
+    return response.content
 
 
 async def send(recipients: list[str], message: str, attachments: list[tuple[str, str, bytes]] | None = None) -> dict:
-    """Sendet eine Nachricht (optional mit Anhängen) über v2/send. `attachments`: (filename, mime, bytes)."""
+    """Sendet eine Nachricht (optional mit Anhängen) über v1/send. `attachments`: (filename, mime, bytes)."""
     base, number, headers = _config()
     headers = {**headers, "Content-Type": "application/json"}
     payload: dict = {"number": number, "recipients": recipients, "message": message}
@@ -135,7 +158,5 @@ async def send(recipients: list[str], message: str, attachments: list[tuple[str,
             f"data:{mime};filename={filename};base64,{base64.b64encode(data).decode()}"
             for filename, mime, data in attachments
         ]
-    async with httpx.AsyncClient(timeout=120) as http:
-        response = await http.post(f"{base}/v2/send", headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json() if response.content else {}
+    response = await _request("POST", "/v1/send", base, headers, 120, json=payload)
+    return response.json() if response.content else {}

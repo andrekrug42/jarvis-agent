@@ -7,7 +7,7 @@ JARVIS ist ein Agent auf Basis des **Mistral Agents SDK** (`mistralai-agents`), 
 ## Architektur
 
 ```
-Signal-App ──► signal-cli-rest-api ──GET /v2/receive──┐
+Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
                                                        ▼
                                      ┌──────────────────────────────┐
                                      │ Managed Deployment "jarvis"  │
@@ -15,7 +15,7 @@ Signal-App ──► signal-cli-rest-api ──GET /v2/receive──┐
                                      │  bridge" (Schedule: 15 s)    │
                                      │   poll → pro Chat eine Agent- │
                                      │   Session → Antwort via       │
-                                     │   POST /v2/send               │
+                                     │   POST /v1/send               │
                                      │  Agent "jarvis" (Agents SDK) │
                                      │   Tools: describe_image,     │
                                      │   read_document (OCR),       │
@@ -25,7 +25,7 @@ Signal-App ──► signal-cli-rest-api ──GET /v2/receive──┐
 
 - **Agent `jarvis`** (`main.py`): Modell `mistral-large-4`, Persona und Regeln in den Instructions.
 - **Bridge-Workflow `jarvis-signal-bridge`** (`bridge.py`): wird alle 15 s per Schedule ausgeführt,
-  pollt `GET /v2/receive/{number}`, verarbeitet jede neue Nachricht und antwortet über `POST /v2/send`.
+  pollt `GET /v1/receive/{number}`, verarbeitet jede neue Nachricht und antwortet über `POST /v1/send`.
 - Pro Signal-Chat (DM = Absender-UUID, Gruppe = groupId) wird **eine Agent-Session** geführt
   (`start_session(idempotency_key="signal-chat:<chat>")`) – dadurch merkt sich JARVIS jedes Gespräch.
   Idempotency-Keys sorgen dafür, dass weder Sessions noch Nachrichten doppelt angelegt werden.

@@ -154,8 +154,8 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     name="jarvis-signal-bridge",
     workflow_display_name="JARVIS Signal Bridge",
     workflow_description=(
-        "Pollt die Signal-REST-API (v2/receive), beantwortet neue Nachrichten über den "
-        "JARVIS-Agenten (eine Session pro Chat) und schickt die Antwort über v2/send zurück."
+        "Pollt die Signal-REST-API (v1/receive), beantwortet neue Nachrichten über den "
+        "JARVIS-Agenten (eine Session pro Chat) und schickt die Antwort über v1/send zurück."
     ),
 )
 class SignalBridgeWorkflow:
