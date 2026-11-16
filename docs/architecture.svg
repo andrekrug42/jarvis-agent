@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="690" viewBox="0 0 1280 690" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#37474f"/>
+    </marker>
+  </defs>
+  <rect width="1280" height="690" fill="#ffffff"/>
+  <text x="640" y="34" text-anchor="middle" font-size="20" font-weight="bold" fill="#212121">JARVIS – Architektur: Mistral Cloud (Agents SDK + Workflows) ⇄ Signal-REST-API</text>
+
+  <!-- Signal-App -->
+  <rect x="20" y="90" width="200" height="170" rx="10" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+  <text x="120" y="115" text-anchor="middle" font-size="14" font-weight="bold" fill="#0d47a1">Signal-App</text>
+  <text x="120" y="137" text-anchor="middle" font-size="11" fill="#333">Du + Familie</text>
+  <text x="120" y="153" text-anchor="middle" font-size="11" fill="#333">1:1-Chats (einzeln)</text>
+  <text x="120" y="169" text-anchor="middle" font-size="11" fill="#333">Gruppenchat</text>
+  <text x="120" y="191" text-anchor="middle" font-size="10" fill="#555">DM = Absender-UUID</text>
+  <text x="120" y="207" text-anchor="middle" font-size="10" fill="#555">Gruppe = groupId</text>
+
+  <!-- signal-cli-rest-api -->
+  <rect x="300" y="90" width="240" height="230" rx="10" fill="#fff3e0" stroke="#ef6c00" stroke-width="2"/>
+  <text x="420" y="115" text-anchor="middle" font-size="14" font-weight="bold" fill="#e65100">signal-cli-rest-api</text>
+  <text x="420" y="131" text-anchor="middle" font-size="10" font-style="italic" fill="#555">(dein Server, z. B. Docker)</text>
+  <text x="420" y="153" text-anchor="middle" font-size="11" fill="#333">GET  /signal/v1/receive/{nr}</text>
+  <text x="420" y="171" text-anchor="middle" font-size="11" fill="#333">POST /signal/v2/send</text>
+  <text x="420" y="189" text-anchor="middle" font-size="11" fill="#333">GET  /signal/v1/attachments/{id}</text>
+  <text x="420" y="211" text-anchor="middle" font-size="10" fill="#555">Auth: Basic (aus Secrets)</text>
+  <text x="420" y="233" text-anchor="middle" font-size="10" fill="#b71c1c">receive dequeuet Nachrichten!</text>
+  <text x="420" y="249" text-anchor="middle" font-size="10" fill="#b71c1c">verloren = neu senden</text>
+
+  <!-- Workspace-Secrets -->
+  <rect x="20" y="300" width="270" height="250" rx="10" fill="#fffde7" stroke="#f9a825" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="155" y="325" text-anchor="middle" font-size="13" font-weight="bold" fill="#8d6e00">Workspace-Secrets „jarvis“</text>
+  <text x="155" y="347" text-anchor="middle" font-size="10.5" fill="#333">signal_api_url</text>
+  <text x="155" y="363" text-anchor="middle" font-size="10.5" fill="#333">signal_phone_number</text>
+  <text x="155" y="379" text-anchor="middle" font-size="10.5" fill="#333">signal_username (base64)</text>
+  <text x="155" y="395" text-anchor="middle" font-size="10.5" fill="#333">signal_password (base64)</text>
+  <text x="155" y="411" text-anchor="middle" font-size="10.5" fill="#333">jarvis_agent_api_key (User-Key)</text>
+  <text x="155" y="437" text-anchor="middle" font-size="10" fill="#555">gebunden an Deployment</text>
+  <text x="155" y="453" text-anchor="middle" font-size="10" fill="#555">„jarvis-bridge“ als Env:</text>
+  <text x="155" y="469" text-anchor="middle" font-size="10" fill="#555">SIGNAL_* + JARVIS_AGENT_API_KEY</text>
+
+  <!-- Mistral Cloud container -->
+  <rect x="600" y="70" width="660" height="560" rx="14" fill="#fafafa" stroke="#616161" stroke-width="2" stroke-dasharray="8 5"/>
+  <text x="930" y="95" text-anchor="middle" font-size="14" font-weight="bold" fill="#424242">Mistral Cloud – Workspace „jarvis“</text>
+
+  <!-- Deployment jarvis-bridge -->
+  <rect x="620" y="120" width="280" height="250" rx="10" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2"/>
+  <text x="760" y="145" text-anchor="middle" font-size="13" font-weight="bold" fill="#1b5e20">Deployment „jarvis-bridge“</text>
+  <text x="760" y="165" text-anchor="middle" font-size="10.5" fill="#333">Dockerfile.bridge → python bridge_worker.py</text>
+  <text x="760" y="181" text-anchor="middle" font-size="10.5" fill="#333">Workflow „jarvis-signal-bridge“</text>
+  <text x="760" y="197" text-anchor="middle" font-size="10.5" fill="#333">Schedule: alle 15 s (PT15S, overlap 2)</text>
+  <text x="760" y="217" text-anchor="middle" font-size="10.5" fill="#333">Aktivitäten:</text>
+  <text x="760" y="233" text-anchor="middle" font-size="10.5" fill="#333">poll_signal_activity (v1/receive)</text>
+  <text x="760" y="249" text-anchor="middle" font-size="10.5" fill="#333">process_message_activity (20 min)</text>
+  <text x="760" y="269" text-anchor="middle" font-size="10.5" fill="#333">1 Agent-Session pro Chat</text>
+  <text x="760" y="285" text-anchor="middle" font-size="10.5" fill="#333">(Idempotenz: signal-chat:…, signal-msg:…)</text>
+  <text x="760" y="307" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#2e7d32">Antwort → POST /v2/send</text>
+
+  <!-- Deployment jarvis (Agent) -->
+  <rect x="960" y="120" width="280" height="250" rx="10" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="2"/>
+  <text x="1100" y="145" text-anchor="middle" font-size="13" font-weight="bold" fill="#4a148c">Deployment „jarvis“ (Agent)</text>
+  <text x="1100" y="165" text-anchor="middle" font-size="10.5" fill="#333">Dockerfile → agents run-worker</text>
+  <text x="1100" y="181" text-anchor="middle" font-size="10.5" fill="#333">Agent „jarvis“: mistral-large-4</text>
+  <text x="1100" y="197" text-anchor="middle" font-size="10.5" fill="#333">Persona: JARVIS wie im MCU (DE)</text>
+  <text x="1100" y="217" text-anchor="middle" font-size="10.5" fill="#333">Tools:</text>
+  <text x="1100" y="233" text-anchor="middle" font-size="10.5" fill="#333">describe_image (Vision, Files API)</text>
+  <text x="1100" y="249" text-anchor="middle" font-size="10.5" fill="#333">read_document (OCR mistral-ocr-latest)</text>
+  <text x="1100" y="269" text-anchor="middle" font-size="10.5" fill="#333">Connector: image_generation</text>
+  <text x="1100" y="285" text-anchor="middle" font-size="10.5" fill="#333">(run_as=deployment → Bilder generieren)</text>
+  <text x="1100" y="307" text-anchor="middle" font-size="10.5" fill="#6a1b9a">Session = Gedächtnis des Chats</text>
+
+  <!-- Mistral APIs -->
+  <rect x="620" y="440" width="620" height="170" rx="10" fill="#eceff1" stroke="#455a64" stroke-width="2"/>
+  <text x="930" y="465" text-anchor="middle" font-size="13" font-weight="bold" fill="#263238">Mistral APIs (Bridge-Worker + Agent)</text>
+  <text x="640" y="487" font-size="10.5" fill="#333">POST /v2/agents/sessions – braucht User-Key</text>
+  <text x="640" y="503" font-size="10.5" fill="#333">(JARVIS_AGENT_API_KEY, sonst „user_id_required“)</text>
+  <text x="640" y="523" font-size="10.5" fill="#333">Files API:</text>
+  <text x="640" y="539" font-size="10.5" fill="#333">Anhänge → upload (purpose vision/ocr) → file_id</text>
+  <text x="640" y="555" font-size="10.5" fill="#333">State jarvis-bridge-state.json (purpose batch):</text>
+  <text x="640" y="571" font-size="10.5" fill="#333">Cross-Chat-Log = übergreifendes Gedächtnis</text>
+  <text x="960" y="487" font-size="10.5" fill="#333">Sessions API: 1 Session pro Signal-Chat,</text>
+  <text x="960" y="503" font-size="10.5" fill="#333">jede Nachricht landet im Session-Verlauf</text>
+  <text x="960" y="523" font-size="10.5" fill="#333">image_generation-Connector:</text>
+  <text x="960" y="539" font-size="10.5" fill="#333">erzeugt Bilder als file_id im Turn;</text>
+  <text x="960" y="555" font-size="10.5" fill="#333">Bridge lädt sie herunter und sendet sie</text>
+  <text x="960" y="571" font-size="10.5" fill="#333">als base64-Anhang via /v2/send</text>
+
+  <!-- Arrows -->
+  <line x1="220" y1="140" x2="296" y2="140" stroke="#37474f" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="258" y="132" text-anchor="middle" font-size="10" fill="#37474f">Nachricht</text>
+
+  <line x1="540" y1="140" x2="616" y2="140" stroke="#37474f" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="578" y="124" text-anchor="middle" font-size="9.5" fill="#37474f">GET /v1/receive/{nr}</text>
+  <text x="578" y="156" text-anchor="middle" font-size="9.5" fill="#37474f">alle 15 s, dequeuet</text>
+
+  <line x1="900" y1="210" x2="956" y2="210" stroke="#37474f" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="928" y="192" text-anchor="middle" font-size="8.5" fill="#37474f">POST /v2/agents/sessions</text>
+  <text x="928" y="230" text-anchor="middle" font-size="8.5" fill="#37474f">Session + Turn</text>
+
+  <line x1="1100" y1="370" x2="1100" y2="436" stroke="#37474f" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="1090" y="392" text-anchor="end" font-size="9.5" fill="#37474f">Tools, Files API,</text>
+  <text x="1090" y="406" text-anchor="end" font-size="9.5" fill="#37474f">image_generation</text>
+
+  <line x1="760" y1="370" x2="760" y2="436" stroke="#37474f" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="750" y="392" text-anchor="end" font-size="9.5" fill="#37474f">State-Log lesen/schreiben</text>
+  <text x="750" y="406" text-anchor="end" font-size="9.5" fill="#37474f">(Files API, purpose=batch)</text>
+
+  <line x1="620" y1="300" x2="544" y2="300" stroke="#37474f" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="582" y="290" text-anchor="middle" font-size="9.5" fill="#37474f">POST /v2/send</text>
+  <text x="582" y="316" text-anchor="middle" font-size="9.5" fill="#37474f">Antwort + base64-Bilder</text>
+
+  <line x1="300" y1="240" x2="224" y2="240" stroke="#37474f" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="262" y="230" text-anchor="middle" font-size="9.5" fill="#37474f">Antwort</text>
+  <text x="262" y="256" text-anchor="middle" font-size="9.5" fill="#37474f">im Chat</text>
+
+  <line x1="290" y1="425" x2="596" y2="425" stroke="#37474f" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#arrow)"/>
+  <text x="443" y="415" text-anchor="middle" font-size="9.5" fill="#37474f">Secret-Bindings → Env-Variablen des Deployments</text>
+
+  <text x="640" y="662" text-anchor="middle" font-size="10" fill="#616161">Ablauf alle 15 s: v1/receive → pro Nachricht eine Session-Nachricht an den Agenten → Antwort via v2/send. v1/receive dequeuet: eine verpasste Nachricht muss neu gesendet werden.</text>
+</svg>
