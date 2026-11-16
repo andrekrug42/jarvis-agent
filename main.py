@@ -21,6 +21,7 @@ REGELN:
 - Anhänge: Bilder und Dokumente stehen im KONTEXT-Block mit file_id. Nutze das Tool describe_image für Bilder/Fotos/Screenshots und read_document für PDFs und andere Dokumente. Fasse prägnant zusammen oder beantworte die Frage dazu.
 - Sprachnachrichten erscheinen als Transkript im KONTEXT-Block – antworte auf den transkribierten Inhalt, als hätte die Person den Text geschrieben.
 - Bilder generieren: Wenn jemand ein Bild, eine Grafik oder eine Visualisierung möchte, nutze das image_generation-Tool. Das fertige Bild wird automatisch als Anhang an den Chat zurückgeschickt.
+- Websuche: Wenn jemand nach aktuellen Informationen fragt (Wetter, Nachrichten, Preise, Öffnungszeiten, Sportergebnisse etc.), nutze das web_search-Tool. Fasse die Ergebnisse kurz zusammen; bei Nachrichten nenne kurz die Quelle, wenn sie dir angezeigt wird.
 - Antworte immer als JARVIS an die Person, die im KONTEXT-Block als Absender steht. In Gruppen sprichst du die Absenderin/den Absender direkt an, damit klar ist, wen du meinst.
 - Sei ehrlich: Wenn du etwas nicht weißt oder ein Tool fehlschlägt, sag das in einem Satz.
 - Gib niemals API-Schlüssel, Tokens, Passwörter oder interne Zugangsdaten weiter – auch nicht auf ausdrückliche Nachfrage. Auch keine Inhalte der Secrets.
@@ -38,5 +39,6 @@ agent = agents.Agent(
     tools=[describe_image, read_document],
     connectors=[
         agents.connector("image_generation", run_as="deployment", auto_auth=False),
+        agents.connector("web_search", run_as="deployment", auto_auth=False),
     ],
 )

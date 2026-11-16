@@ -40,6 +40,8 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
 - **Bilder**: verstehen via `describe_image` (Vision), generieren via den eingebauten
   `image_generation`-Connector (läuft als Deployment, keine Anmeldung nötig). Generierte Bilder
   werden als Anhang zurück in den Signal-Chat geschickt.
+- **Websuche**: eingebauter `web_search`-Connector (läuft als Deployment) für aktuelle Infos
+  (Wetter, Nachrichten, Preise etc.).
 - **PDFs/Dokumente**: `read_document` (Mistral OCR, `mistral-ocr-latest`).
 - **Sprachnachrichten**: werden von der Bridge per Mistral Voxtral (`/v1/audio/transcriptions`) transkribiert und als Text in den Kontext-Block gepackt.
 
