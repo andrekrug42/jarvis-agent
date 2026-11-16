@@ -116,6 +116,7 @@ def normalize(entry: dict) -> dict | None:
     ]
     return {
         "key": f"{env.get('timestamp', 0)}:{source_uuid}:{dm.get('timestamp', 0)}",
+        "timestamp": env.get("timestamp") or dm.get("timestamp") or 0,
         "chat_key": chat_key,
         "chat_label": chat_label,
         "sender_uuid": source_uuid,
@@ -160,3 +161,20 @@ async def send(recipients: list[str], message: str, attachments: list[tuple[str,
         ]
     response = await _request("POST", "/v2/send", base, headers, 120, json=payload)
     return response.json() if response.content else {}
+
+
+async def send_typing(recipients: list[str], stop: bool = False) -> None:
+    """Zeigt den Schreib-Indikator im Chat (PUT /v1/typing-indicator) bzw. blendet ihn aus (DELETE)."""
+    base, number, headers = _config()
+    headers = {**headers, "Content-Type": "application/json"}
+    method = "DELETE" if stop else "PUT"
+    for recipient in recipients:
+        await _request(method, f"/v1/typing-indicator/{number}", base, headers, 30, json={"recipient": recipient})
+
+
+async def send_read_receipt(recipient: str, timestamp: int) -> None:
+    """Markiert eine empfangene Nachricht als gelesen (POST /v1/receipts, receipt_type=read)."""
+    base, number, headers = _config()
+    headers = {**headers, "Content-Type": "application/json"}
+    payload = {"receipt_type": "read", "recipient": recipient, "timestamp": timestamp}
+    await _request("POST", f"/v1/receipts/{number}", base, headers, 30, json=payload)

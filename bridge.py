@@ -125,6 +125,11 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     if message["key"] in state.get("processed", []):
         return {"key": message["key"], "status": "already_processed"}
 
+    try:
+        await signal_client.send_typing(message["recipients"], stop=False)
+    except Exception:
+        pass
+
     files_info: list[dict[str, str]] = []
     for attachment in message["attachments"]:
         data = await signal_client.download_attachment(attachment["id"])
@@ -180,6 +185,14 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     state["processed"] = state["processed"][-PROCESSED_LIMIT:]
     try:
         await state_store.save(state)
+    except Exception:
+        pass
+
+    try:
+        await signal_client.send_typing(message["recipients"], stop=True)
+        if message.get("timestamp"):
+            for recipient in message["recipients"]:
+                await signal_client.send_read_receipt(recipient, message["timestamp"])
     except Exception:
         pass
 

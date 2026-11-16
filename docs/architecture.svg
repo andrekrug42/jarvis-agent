@@ -17,15 +17,17 @@
   <text x="120" y="207" text-anchor="middle" font-size="10" fill="#555">Gruppe = groupId</text>
 
   <!-- signal-cli-rest-api -->
-  <rect x="300" y="90" width="240" height="230" rx="10" fill="#fff3e0" stroke="#ef6c00" stroke-width="2"/>
+  <rect x="300" y="90" width="240" height="260" rx="10" fill="#fff3e0" stroke="#ef6c00" stroke-width="2"/>
   <text x="420" y="115" text-anchor="middle" font-size="14" font-weight="bold" fill="#e65100">signal-cli-rest-api</text>
   <text x="420" y="131" text-anchor="middle" font-size="10" font-style="italic" fill="#555">(dein Server, z. B. Docker)</text>
   <text x="420" y="153" text-anchor="middle" font-size="11" fill="#333">GET  /signal/v1/receive/{nr}</text>
   <text x="420" y="171" text-anchor="middle" font-size="11" fill="#333">POST /signal/v2/send</text>
   <text x="420" y="189" text-anchor="middle" font-size="11" fill="#333">GET  /signal/v1/attachments/{id}</text>
-  <text x="420" y="211" text-anchor="middle" font-size="10" fill="#555">Auth: Basic (aus Secrets)</text>
-  <text x="420" y="233" text-anchor="middle" font-size="10" fill="#b71c1c">receive dequeuet Nachrichten!</text>
-  <text x="420" y="249" text-anchor="middle" font-size="10" fill="#b71c1c">verloren = neu senden</text>
+  <text x="420" y="207" text-anchor="middle" font-size="11" fill="#333">PUT/DELETE /v1/typing-indicator</text>
+  <text x="420" y="225" text-anchor="middle" font-size="11" fill="#333">POST /v1/receipts (gelesen)</text>
+  <text x="420" y="247" text-anchor="middle" font-size="10" fill="#555">Auth: Basic (aus Secrets)</text>
+  <text x="420" y="269" text-anchor="middle" font-size="10" fill="#b71c1c">receive dequeuet Nachrichten!</text>
+  <text x="420" y="285" text-anchor="middle" font-size="10" fill="#b71c1c">verloren = neu senden</text>
 
   <!-- Workspace-Secrets -->
   <rect x="20" y="300" width="270" height="250" rx="10" fill="#fffde7" stroke="#f9a825" stroke-width="2" stroke-dasharray="6 4"/>

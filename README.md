@@ -28,6 +28,8 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
 - **Agent `jarvis`** (`main.py`): Modell `mistral-large-4`, Persona und Regeln in den Instructions.
 - **Bridge-Workflow `jarvis-signal-bridge`** (`bridge.py`): wird alle 15 s per Schedule ausgeführt,
   pollt `GET /v1/receive/{number}`, verarbeitet jede neue Nachricht und antwortet über `POST /v2/send`.
+  Dabei: Schreib-Indikator an beim Verarbeiten (`PUT /v1/typing-indicator/{number}`), aus nach der
+  Antwort (`DELETE`), und „gelesen“-Receipt nach der Antwort (`POST /v1/receipts/{number}`, receipt_type=read).
 - Pro Signal-Chat (DM = Absender-UUID, Gruppe = groupId) wird **eine Agent-Session** geführt
   (`start_session(idempotency_key="signal-chat:<chat>")`) – dadurch merkt sich JARVIS jedes Gespräch.
   Idempotency-Keys sorgen dafür, dass weder Sessions noch Nachrichten doppelt angelegt werden.
