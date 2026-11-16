@@ -102,6 +102,29 @@ def extract_file_ids(obj: Any, found: list[str] | None = None) -> list[str]:
     return found
 
 
+def extract_image_urls(obj: Any, found: list[str] | None = None) -> list[str]:
+    """Sammelt rekursiv alle image_url-Werte aus einem Turn-Record (z. B. Ergebnis des Tools generate_image)."""
+    if found is None:
+        found = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "image_url" and isinstance(value, str) and value.startswith("http") and value not in found:
+                found.append(value)
+            else:
+                extract_image_urls(value, found)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            extract_image_urls(value, found)
+    else:
+        dump = getattr(obj, "model_dump", None)
+        if callable(dump):
+            try:
+                extract_image_urls(dump(), found)
+            except Exception:
+                pass
+    return found
+
+
 @workflows.activity(start_to_close_timeout=timedelta(seconds=60), retry_policy_max_attempts=2)
 async def poll_signal_activity() -> list[dict[str, Any]]:
     import signal_client
@@ -192,6 +215,18 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
         try:
             data = await state_store.download_mistral_file(file_id)
             attachments_out.append((f"jarvis-bild-{index}.png", "image/png", data))
+        except Exception:
+            pass
+    for url in extract_image_urls(record):
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=120) as http:
+                response = await http.get(url)
+                response.raise_for_status()
+            mime = response.headers.get("content-type", "image/png").split(";")[0].strip() or "image/png"
+            ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}.get(mime, "png")
+            attachments_out.append((f"jarvis-bild-{len(attachments_out) + 1}.{ext}", mime, response.content))
         except Exception:
             pass
 

@@ -19,7 +19,8 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
                                      │  Agent "jarvis" (Agents SDK) │
                                      │   Tools: describe_image,     │
                                      │   read_document (OCR),       │
-                                     │   Connector: image_generation│
+                                     │   web_search, generate_image,│
+                                     │   search_knowledge           │
                                      └──────────────────────────────┘
 ```
 
@@ -37,11 +38,15 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
   `state_store`, als JSON in einem Dokument der Mistral-Library `jarvis-bridge-state`) und packt die letzten Einträge jeder
   Nachricht als Kontext mit hinein. So weiß JARVIS, mit wem er schreibt und was mit den anderen
   Personen besprochen wurde.
-- **Bilder**: verstehen via `describe_image` (Vision), generieren via den eingebauten
-  `image_generation`-Connector (läuft als Deployment, keine Anmeldung nötig). Generierte Bilder
-  werden als Anhang zurück in den Signal-Chat geschickt.
-- **Websuche**: eingebauter `web_search`-Connector (läuft als Deployment) für aktuelle Infos
-  (Wetter, Nachrichten, Preise etc.).
+- **Bilder**: verstehen via `describe_image` (Vision), generieren via `generate_image`
+  (eingebautes `image_generation`-Tool über die Conversations-API). Generierte Bilder werden als
+  Anhang zurück in den Signal-Chat geschickt.
+- **Websuche**: Tool `web_search` (eingebautes `web_search`-Tool über die Conversations-API) für
+  aktuelle Infos (Wetter, Nachrichten, Preise etc.).
+- **Libraries (Familien-Wissen)**: Tool `search_knowledge` (eingebautes `document_library`-Tool über
+  die Conversations-API) durchsucht die Libraries „Dokumente zu <Name>“, „Allgemeine Dokumente“
+  und „Sonstiges“. Damit der Deployment-Service-Account lesen darf, müssen die Libraries mit dem
+  Workspace `jarvis` geteilt sein (Viewer reicht).
 - **PDFs/Dokumente**: `read_document` (Mistral OCR, `mistral-ocr-latest`).
 - **Sprachnachrichten**: werden von der Bridge per Mistral Voxtral (`/v1/audio/transcriptions`) transkribiert und als Text in den Kontext-Block gepackt.
 

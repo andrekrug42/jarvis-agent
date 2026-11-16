@@ -1,9 +1,16 @@
 import asyncio
 import base64
+import json
+import os
 
 from mistralai import agents
 
 MAX_DOCUMENT_CHARS = 120_000
+
+SEARCH_MODEL = os.environ.get("JARVIS_SEARCH_MODEL", "mistral-large-4")
+LIBRARY_NAME_PREFIXES = ("Dokumente zu ",)
+LIBRARY_EXTRA_NAMES = {"Allgemeine Dokumente", "Sonstiges"}
+_library_ids_cache: list[str] | None = None
 
 
 def _mistral_client():
@@ -115,3 +122,162 @@ async def read_document(file_id: str, question: str = "") -> str:
         return await asyncio.to_thread(_qa)
 
     return text or "(Das Dokument enthielt keinen erkennbaren Text.)"
+
+
+def _conversations(client):
+    conversations = getattr(client, "conversations", None)
+    if conversations is None:
+        conversations = client.beta.conversations
+    return conversations
+
+
+def _conversation_sync(model: str, tools: list[dict], inputs: str):
+    client = _mistral_client()
+    return _conversations(client).start(model=model, tools=tools, inputs=inputs)
+
+
+def _dump(obj):
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    return obj
+
+
+def _collect_text_urls(obj, texts: list[str], urls: list[str]) -> None:
+    if isinstance(obj, dict):
+        if obj.get("type") == "text" and isinstance(obj.get("text"), str):
+            texts.append(obj["text"])
+        annotations = obj.get("annotations")
+        if isinstance(annotations, list):
+            for ann in annotations:
+                if isinstance(ann, dict):
+                    citation = ann.get("url_citation")
+                    if isinstance(citation, dict) and citation.get("url"):
+                        urls.append(citation["url"])
+        for value in obj.values():
+            _collect_text_urls(value, texts, urls)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _collect_text_urls(item, texts, urls)
+
+
+def _conversation_text(response) -> tuple[str, list[str]]:
+    texts: list[str] = []
+    urls: list[str] = []
+    for output in getattr(response, "outputs", None) or []:
+        dump = _dump(output)
+        if isinstance(dump, dict) and dump.get("type") == "message.output":
+            content = dump.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+            else:
+                _collect_text_urls(content, texts, urls)
+    return "\n".join(part for part in texts if part).strip(), list(dict.fromkeys(urls))
+
+
+def _find_first_url(obj):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "url" and isinstance(value, str) and value.startswith("http"):
+                return value
+            found = _find_first_url(value)
+            if found:
+                return found
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            found = _find_first_url(item)
+            if found:
+                return found
+    return None
+
+
+@agents.tool
+async def web_search(query: str) -> str:
+    """Sucht im Web nach aktuellen Informationen (Wetter, Nachrichten, Preise, Öffnungszeiten, Sportergebnisse ...).
+    Gibt eine prägnante Antwort auf Deutsch zurück, inklusive der gefundenen Quellen-URLs.
+
+    `query`: die Suchfrage, z. B. "Wettervorhersage Hamburg morgen".
+    """
+    def _run():
+        return _conversation_sync(SEARCH_MODEL, [{"type": "web_search"}], query)
+
+    response = await asyncio.to_thread(_run)
+    text, urls = _conversation_text(response)
+    if not text:
+        return "(Die Websuche lieferte keine Antwort.)"
+    if urls:
+        return f"{text}\n\nQuellen: {', '.join(urls[:8])}"
+    return text
+
+
+@agents.tool
+async def generate_image(prompt: str) -> dict:
+    """Generiert ein Bild (Foto, Grafik, Illustration) anhand einer Beschreibung.
+    Gibt {"image_url": <URL des fertigen Bildes>} zurück; das Bild wird automatisch als Anhang an den Chat geschickt.
+
+    `prompt`: genaue Bildbeschreibung, z. B. "R futuristisches Smart-Home-Dashboard, dunkles Design".
+    """
+    def _run():
+        return _conversation_sync(SEARCH_MODEL, [{"type": "image_generation"}], prompt)
+
+    response = await asyncio.to_thread(_run)
+    for output in getattr(response, "outputs", None) or []:
+        dump = _dump(output)
+        if isinstance(dump, dict) and dump.get("type") == "tool.execution" and "image" in str(dump.get("name", "")).lower():
+            info = dump.get("info") or {}
+            result = info.get("result")
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except Exception:
+                    result = None
+            url = None
+            if isinstance(result, dict):
+                url = result.get("url")
+            if not url:
+                url = _find_first_url(info)
+            if url:
+                return {"image_url": url}
+    return {"image_url": "", "error": "Die Bildgenerierung lieferte kein Ergebnis."}
+
+
+def _resolve_library_ids() -> list[str]:
+    global _library_ids_cache
+    if _library_ids_cache is not None:
+        return _library_ids_cache
+    env_ids = os.environ.get("JARVIS_LIBRARY_IDS", "").strip()
+    if env_ids:
+        _library_ids_cache = [part.strip() for part in env_ids.split(",") if part.strip()]
+        return _library_ids_cache
+    client = _mistral_client()
+    response = client.libraries.list(page_size=100)
+    ids = []
+    for item in getattr(response, "data", None) or []:
+        name = getattr(item, "name", "") or ""
+        if name.startswith(LIBRARY_NAME_PREFIXES) or name in LIBRARY_EXTRA_NAMES:
+            ids.append(item.id)
+    _library_ids_cache = ids
+    return ids
+
+
+@agents.tool
+async def search_knowledge(query: str) -> str:
+    """Sucht in den Familien-Libraries (Dokumente zu Andre/Anna/Melina/Magda/Jano, Allgemeine Dokumente, Sonstiges)
+    und beantwortet die Frage anhand der gefundenen Dokumente; nennt die Dokumentnamen als Quellen.
+
+    `query`: die Frage, z. B. "Was hat Anna über den Urlaub im August geschrieben?".
+    """
+    def _run() -> str:
+        library_ids = _resolve_library_ids()
+        if not library_ids:
+            return "(Aktuell sind keine Libraries verfügbar.)"
+        inputs = (
+            "Beantworte die folgende Frage ausschließlich anhand der Dokumente in den verbundenen Libraries. "
+            "Antworte auf Deutsch, prägnant, und nenne am Ende die Dokumentnamen als Quellen.\n\nFrage: " + query
+        )
+        response = _conversation_sync(
+            SEARCH_MODEL, [{"type": "document_library", "library_ids": library_ids}], inputs
+        )
+        text, _ = _conversation_text(response)
+        return text or "(In den Libraries wurde nichts Passendes gefunden.)"
+
+    return await asyncio.to_thread(_run)
