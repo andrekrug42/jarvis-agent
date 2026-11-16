@@ -7,9 +7,6 @@ from pydantic import BaseModel
 
 import mistralai.workflows as workflows
 
-import signal_client
-import state_store
-
 LOG_LIMIT = 200
 PROCESSED_LIMIT = 500
 LOG_CONTEXT_ENTRIES = 30
@@ -78,12 +75,17 @@ def extract_file_ids(obj: Any, found: list[str] | None = None) -> list[str]:
 
 @workflows.activity(start_to_close_timeout=timedelta(seconds=60), retry_policy_max_attempts=2)
 async def poll_signal_activity() -> list[dict[str, Any]]:
+    import signal_client
+
     return await signal_client.receive()
 
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=20), retry_policy_max_attempts=2)
 async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     from mistralai import agents
+
+    import signal_client
+    import state_store
 
     agent_name = os.environ.get("JARVIS_AGENT_NAME", "jarvis")
     agent = agents.Agent.load_from(agent_name=agent_name)
