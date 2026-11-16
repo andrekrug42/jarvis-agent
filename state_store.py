@@ -1,7 +1,9 @@
 import asyncio
 import json
+import re
 
-STATE_FILE_NAME = "jarvis-bridge-state.json"
+LIBRARY_NAME = "jarvis-bridge-state"
+STATE_DOC_NAME = "jarvis-state.md"
 
 
 def _mistral_client():
@@ -15,53 +17,67 @@ def _default_state() -> dict:
     return {"chats": {}, "log": [], "processed": []}
 
 
+def _find_library(client) -> str | None:
+    response = client.libraries.list(search=LIBRARY_NAME, page_size=100)
+    for item in response.data or []:
+        if item.name == LIBRARY_NAME:
+            return item.id
+    return None
+
+
+def _ensure_library(client) -> str:
+    library_id = _find_library(client)
+    if library_id:
+        return library_id
+    return client.libraries.create(name=LIBRARY_NAME, description="JARVIS Signal-Bridge State (Cross-Chat-Gedaechtnis)").id
+
+
+def _parse_state(text: str) -> dict:
+    match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
+    raw = match.group(1) if match else text
+    try:
+        state = json.loads(raw)
+    except Exception:
+        return _default_state()
+    if not isinstance(state, dict):
+        return _default_state()
+    state.setdefault("chats", {})
+    state.setdefault("log", [])
+    state.setdefault("processed", [])
+    return state
+
+
 def _load_sync() -> dict:
     client = _mistral_client()
     try:
-        listing = client.files.list()
-        files = getattr(listing, "data", listing) or []
-        candidates = [
-            f for f in files
-            if getattr(f, "file_name", None) == STATE_FILE_NAME or (isinstance(f, dict) and f.get("file_name") == STATE_FILE_NAME)
-        ]
-        if not candidates:
+        library_id = _find_library(client)
+        if not library_id:
             return _default_state()
-        def _created(f):
-            value = getattr(f, "created_at", None) if not isinstance(f, dict) else f.get("created_at")
-            return value or ""
-        newest = max(candidates, key=_created)
-        file_id = newest.id if not isinstance(newest, dict) else newest["id"]
-        response = client.files.download(file_id=file_id)
-        raw = response.read() if hasattr(response, "read") else bytes(response)
-        state = json.loads(raw.decode())
-        if not isinstance(state, dict):
-            return _default_state()
-        state.setdefault("chats", {})
-        state.setdefault("log", [])
-        state.setdefault("processed", [])
-        return state
+        docs = client.documents.list(
+            library_id=library_id, search=STATE_DOC_NAME, sort_by="created_at", sort_order="desc", page_size=100
+        )
+        for doc in docs.data or []:
+            if doc.name == STATE_DOC_NAME:
+                text = client.documents.text_content(library_id=library_id, document_id=doc.id).text
+                return _parse_state(text)
+        return _default_state()
     except Exception:
         return _default_state()
 
 
 def _save_sync(state: dict) -> None:
     client = _mistral_client()
-    listing = client.files.list()
-    files = getattr(listing, "data", listing) or []
-    old_ids = [
-        (f.id if not isinstance(f, dict) else f.get("id"))
-        for f in files
-        if (getattr(f, "file_name", None) if not isinstance(f, dict) else f.get("file_name")) == STATE_FILE_NAME
-    ]
-    upload = client.files.upload(
-        file={"file_name": STATE_FILE_NAME, "content": json.dumps(state).encode()},
-        purpose="batch",
+    library_id = _ensure_library(client)
+    content = "```json\n" + json.dumps(state, ensure_ascii=False) + "\n```"
+    new_doc = client.documents.upload(
+        library_id=library_id,
+        file={"file_name": STATE_DOC_NAME, "content": content.encode("utf-8"), "content_type": "text/markdown"},
     )
-    new_id = upload.id if not isinstance(upload, dict) else upload.get("id")
-    for old_id in old_ids:
-        if old_id and old_id != new_id:
+    docs = client.documents.list(library_id=library_id, search=STATE_DOC_NAME, page_size=100)
+    for doc in docs.data or []:
+        if doc.name == STATE_DOC_NAME and doc.id != new_doc.id:
             try:
-                client.files.delete(file_id=old_id)
+                client.documents.delete(library_id=library_id, document_id=doc.id)
             except Exception:
                 pass
 

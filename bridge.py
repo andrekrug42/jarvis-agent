@@ -178,7 +178,10 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     state["log"] = state["log"][-LOG_LIMIT:]
     state.setdefault("processed", []).append(message["key"])
     state["processed"] = state["processed"][-PROCESSED_LIMIT:]
-    await state_store.save(state)
+    try:
+        await state_store.save(state)
+    except Exception:
+        pass
 
     status = "ok" if isinstance(record, agents.Completed) else type(record).__name__
     return {"key": message["key"], "status": status, "chat": message["chat_key"], "reply_chars": len(reply_text), "images": len(attachments_out)}
