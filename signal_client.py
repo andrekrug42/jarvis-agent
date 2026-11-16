@@ -147,7 +147,7 @@ async def download_attachment(attachment_id: str) -> bytes:
 
 
 async def send(recipients: list[str], message: str, attachments: list[tuple[str, str, bytes]] | None = None) -> dict:
-    """Sendet eine Nachricht (optional mit Anhängen) über v1/send. `attachments`: (filename, mime, bytes)."""
+    """Sendet eine Nachricht (optional mit Anhängen) über v2/send. `attachments`: (filename, mime, bytes)."""
     base, number, headers = _config()
     headers = {**headers, "Content-Type": "application/json"}
     payload: dict = {"number": number, "recipients": recipients, "message": message}
@@ -158,5 +158,5 @@ async def send(recipients: list[str], message: str, attachments: list[tuple[str,
             f"data:{mime};filename={filename};base64,{base64.b64encode(data).decode()}"
             for filename, mime, data in attachments
         ]
-    response = await _request("POST", "/v1/send", base, headers, 120, json=payload)
+    response = await _request("POST", "/v2/send", base, headers, 120, json=payload)
     return response.json() if response.content else {}

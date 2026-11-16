@@ -15,7 +15,7 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
                                      │  bridge" (Schedule: 15 s)    │
                                      │   poll → pro Chat eine Agent- │
                                      │   Session → Antwort via       │
-                                     │   POST /v1/send               │
+                                     │   POST /v2/send               │
                                      │  Agent "jarvis" (Agents SDK) │
                                      │   Tools: describe_image,     │
                                      │   read_document (OCR),       │
@@ -25,7 +25,7 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
 
 - **Agent `jarvis`** (`main.py`): Modell `mistral-large-4`, Persona und Regeln in den Instructions.
 - **Bridge-Workflow `jarvis-signal-bridge`** (`bridge.py`): wird alle 15 s per Schedule ausgeführt,
-  pollt `GET /v1/receive/{number}`, verarbeitet jede neue Nachricht und antwortet über `POST /v1/send`.
+  pollt `GET /v1/receive/{number}`, verarbeitet jede neue Nachricht und antwortet über `POST /v2/send`.
 - Pro Signal-Chat (DM = Absender-UUID, Gruppe = groupId) wird **eine Agent-Session** geführt
   (`start_session(idempotency_key="signal-chat:<chat>")`) – dadurch merkt sich JARVIS jedes Gespräch.
   Idempotency-Keys sorgen dafür, dass weder Sessions noch Nachrichten doppelt angelegt werden.
@@ -52,6 +52,9 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
 
    Daraus baut die Bridge den Header `Authorization: Basic base64(user:pass)`.
    Werte niemals in den Chat/ ins Repo schreiben – die Bridge liest sie zur Laufzeit aus der Umgebung.
+   - `jarvis_agent_api_key` – dein persönlicher Mistral-API-Key (User-Key), an das Deployment
+     `jarvis-bridge` als `JARVIS_AGENT_API_KEY` gebunden. Die Bridge braucht ihn, weil Agent-Sessions
+     nur als User (nicht als Service Account des Deployments) gestartet werden dürfen (`user_id_required`).
 3. Ein **GitHub-Repository**, das der GitHub-Connector (`github_app`) in diesem Workspace lesen darf.
 
 ## Deployment (verwaltet)
@@ -123,6 +126,7 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `SIGNAL_AUTH_PREFIX` | nein | Präfix des Header-Werts, Standard `Bearer ` |
 | `SIGNAL_ALLOWED_SOURCES` | nein | kommaseparierte UUIDs/Nummern, die JARVIS beantworten darf; leer = alle |
 | `JARVIS_AGENT_NAME` | nein | Name des Agenten, Standard `jarvis` |
+| `JARVIS_AGENT_API_KEY` | ja (Bridge) | User-API-Key für `Agent.load_from`/`start_session` (Sessions nur als User möglich); Fallback: Service-Account-Token des Deployments |
 | `JARVIS_OWNER_NAME` | nein | Name des Account-Inhabers für den Kontext |
 
 ## Hinweise

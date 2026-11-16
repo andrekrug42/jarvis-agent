@@ -88,14 +88,18 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     import state_store
 
     agent_name = os.environ.get("JARVIS_AGENT_NAME", "jarvis")
-    token_path = os.environ.get("MISTRAL_SA_TOKEN_PATH", "")
-    if token_path and os.path.exists(token_path):
-        with open(token_path, encoding="utf-8") as handle:
-            sa_token = handle.read().strip()
-        client = agents.Client(api_key=sa_token) if sa_token else agents.Client()
+    user_api_key = os.environ.get("JARVIS_AGENT_API_KEY", "").strip()
+    if user_api_key:
+        agent = agents.Agent.load_from(agent_name=agent_name, api_key=user_api_key)
     else:
-        client = agents.Client()
-    agent = agents.Agent.load_from(agent_name=agent_name, client=client)
+        token_path = os.environ.get("MISTRAL_SA_TOKEN_PATH", "")
+        if token_path and os.path.exists(token_path):
+            with open(token_path, encoding="utf-8") as handle:
+                sa_token = handle.read().strip()
+            client = agents.Client(api_key=sa_token) if sa_token else agents.Client()
+        else:
+            client = agents.Client()
+        agent = agents.Agent.load_from(agent_name=agent_name, client=client)
 
     state = await state_store.load()
     if message["key"] in state.get("processed", []):
@@ -162,7 +166,7 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     workflow_display_name="JARVIS Signal Bridge",
     workflow_description=(
         "Pollt die Signal-REST-API (v1/receive), beantwortet neue Nachrichten über den "
-        "JARVIS-Agenten (eine Session pro Chat) und schickt die Antwort über v1/send zurück."
+        "JARVIS-Agenten (eine Session pro Chat) und schickt die Antwort über v2/send zurück."
     ),
 )
 class SignalBridgeWorkflow:
