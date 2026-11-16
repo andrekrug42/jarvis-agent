@@ -92,8 +92,7 @@ async def save(state: dict) -> None:
 
 def _upload_sync(file_name: str, content_type: str, data: bytes) -> str:
     client = _mistral_client()
-    purpose = "vision" if content_type.startswith("image/") else "ocr"
-    upload = client.files.upload(file={"file_name": file_name, "content": data}, purpose=purpose)
+    upload = client.files.upload(file={"file_name": file_name, "content": data}, purpose="ocr")
     return upload.id if not isinstance(upload, dict) else upload["id"]
 
 
