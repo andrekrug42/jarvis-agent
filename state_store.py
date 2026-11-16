@@ -1,10 +1,14 @@
 import asyncio
+import base64
 import json
 import os
 import re
 
 LIBRARY_NAME = "jarvis-bridge-state"
 STATE_DOC_NAME = "jarvis-state.md"
+FAMILY_LIBRARY_PREFIXES = ("Dokumente zu ",)
+FAMILY_LIBRARY_EXTRA_NAMES = {"Allgemeine Dokumente", "Sonstiges"}
+CLASSIFY_MAX_CHARS = 20_000
 
 
 def _mistral_client():
@@ -135,3 +139,92 @@ def _download_sync(file_id: str) -> bytes:
 async def download_mistral_file(file_id: str) -> bytes:
     """Lädt eine Datei (z. B. ein generiertes Bild) aus der Mistral-Files-API herunter."""
     return await asyncio.to_thread(_download_sync, file_id)
+
+
+def _family_libraries_sync() -> list[dict]:
+    client = _mistral_client()
+    response = client.libraries.list(page_size=100)
+    libraries = []
+    for item in getattr(response, "data", None) or []:
+        name = getattr(item, "name", "") or ""
+        if name.startswith(FAMILY_LIBRARY_PREFIXES) or name in FAMILY_LIBRARY_EXTRA_NAMES:
+            libraries.append({"id": item.id, "name": name})
+    return libraries
+
+
+async def list_family_libraries() -> list[dict]:
+    """Listet die Familien-Libraries (Dokumente zu <Name>, Allgemeine Dokumente, Sonstiges)."""
+    return await asyncio.to_thread(_family_libraries_sync)
+
+
+def _document_text_sync(client, filename: str, content_type: str, data: bytes) -> str:
+    if content_type == "application/pdf" or data.startswith(b"%PDF"):
+        try:
+            response = client.ocr.process(
+                model="mistral-ocr-latest",
+                document={
+                    "type": "document_url",
+                    "document_url": f"data:application/pdf;base64,{base64.b64encode(data).decode()}",
+                },
+            )
+            return "\n".join(getattr(page, "markdown", "") or "" for page in response.pages)[:CLASSIFY_MAX_CHARS]
+        except Exception:
+            return ""
+    if content_type.startswith("text/"):
+        return data[:CLASSIFY_MAX_CHARS].decode("utf-8", "ignore")
+    return ""
+
+
+def _classify_sync(filename: str, content_type: str, data: bytes, libraries: list[dict], context: str) -> dict:
+    client = _mistral_client()
+    text = _document_text_sync(client, filename, content_type, data)
+    lib_desc = "\n".join(f"- {lib['name']} (id: {lib['id']})" for lib in libraries)
+    prompt = (
+        "Du bekommst ein per Signal empfangenes Dokument und eine Liste von Libraries. "
+        "Entscheide, ob das Dokument langfristig aufbewahrt werden soll und in welche Library es gehört. "
+        "Regeln: Dokumente, die eine konkrete Person betreffen (Name im Inhalt/Absender), kommen in deren Library "
+        "'Dokumente zu <Name>'; allgemeine Dokumente (Verträge, Anleitungen, Rechnungen der Familie) in "
+        "'Allgemeine Dokumente'; alles andere Unwichtige (z. B. flüchtige Screenshots ohne Bezug) nach 'Sonstiges' "
+        "ODER null, wenn es gar nicht abgelegt werden soll (reiner Chat-Content ohne Mehrwert). "
+        "Antworte AUSSCHLIESSLICH mit einem JSON-Objekt: {\"library_id\": \"<id oder null>\", \"reason\": \"<kurzer Grund auf Deutsch>\"}.\n\n"
+        f"Libraries:\n{lib_desc}\n\nKontext: {context}\nDatei: {filename} ({content_type})\n"
+        f"Auszug des Inhalts:\n{text or '(kein Text extrahierbar, nur Dateiname/Typ)'}"
+    )
+    response = client.chat.complete(
+        model="mistral-large-4",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+    )
+    content = response.choices[0].message.content
+    raw = content if isinstance(content, str) else str(content)
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    try:
+        decision = json.loads(match.group(0)) if match else {}
+    except Exception:
+        decision = {}
+    library_id = decision.get("library_id")
+    valid_ids = {lib["id"] for lib in libraries}
+    if library_id not in valid_ids:
+        library_id = None
+    reason = decision.get("reason") if isinstance(decision.get("reason"), str) else ""
+    return {"library_id": library_id, "reason": reason[:200]}
+
+
+async def classify_document(
+    filename: str, content_type: str, data: bytes, libraries: list[dict], context: str
+) -> dict:
+    """Entscheidet per LLM, ob ein Dokument in eine der Libraries abgelegt werden soll (und welche)."""
+    return await asyncio.to_thread(_classify_sync, filename, content_type, data, libraries, context)
+
+
+def _upload_document_sync(library_id: str, filename: str, content_type: str, data: bytes) -> str:
+    client = _mistral_client()
+    doc = client.documents.upload(
+        library_id=library_id, file={"file_name": filename, "content": data, "content_type": content_type}
+    )
+    return doc.id if not isinstance(doc, dict) else doc["id"]
+
+
+async def upload_document_to_library(library_id: str, filename: str, content_type: str, data: bytes) -> str:
+    """Lädt ein Dokument in eine Library hoch (mit User-Key, da der Deployment-SA dort nur lesen darf)."""
+    return await asyncio.to_thread(_upload_document_sync, library_id, filename, content_type, data)

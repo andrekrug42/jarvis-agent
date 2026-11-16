@@ -47,6 +47,10 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
   die Conversations-API) durchsucht die Libraries „Dokumente zu <Name>“, „Allgemeine Dokumente“
   und „Sonstiges“. Damit der Deployment-Service-Account lesen darf, müssen die Libraries mit dem
   Workspace `jarvis` geteilt sein (Viewer reicht).
+- **Dokumente automatisch ablegen**: Bei jedem Dokument-Anhang (kein Bild/Video/Audio) entscheidet die
+  Bridge per LLM (`classify_document`), ob das Dokument in eine der Libraries gehört, und lädt es mit
+  dem User-Key dort hoch (`upload_document_to_library`). Die Ablage landet im Kurzprotokoll-Log und
+  damit im Kontext der anderen Chats. `filed` im Execution-Result zeigt die Anzahl.
 - **PDFs/Dokumente**: `read_document` (Mistral OCR, `mistral-ocr-latest`).
 - **Sprachnachrichten**: werden von der Bridge per Mistral Voxtral (`/v1/audio/transcriptions`) transkribiert und als Text in den Kontext-Block gepackt.
 

@@ -50,6 +50,7 @@ def build_envelope(
     log_lines: list[str],
     audio_transcripts: list[str] | None = None,
     failed_attachments: list[str] | None = None,
+    libraries: list[dict] | None = None,
 ) -> str:
     owner = os.environ.get("JARVIS_OWNER_NAME", "").strip()
     lines = ["[KONTEXT – nur für dich, nicht wörtlich zitieren]"]
@@ -63,6 +64,9 @@ def build_envelope(
     if log_lines:
         lines.append("Zuletzt in den anderen Chats besprochen:")
         lines.extend(f"- {entry}" for entry in log_lines)
+    if libraries:
+        lines.append("Verfügbare Libraries (search_knowledge durchsucht sie; Dokumente werden dort abgelegt):")
+        lines.extend(f"- {lib['name']} (id: {lib['id']})" for lib in libraries)
     if audio_transcripts:
         lines.append("Sprachnachrichten (Transkript):")
         lines.extend(f"- {entry}" for entry in audio_transcripts)
@@ -168,6 +172,7 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     files_info: list[dict[str, str]] = []
     audio_transcripts: list[str] = []
     failed_attachments: list[str] = []
+    document_files: list[tuple[dict, bytes]] = []
     for attachment in message["attachments"]:
         try:
             data = await signal_client.download_attachment(attachment["id"])
@@ -179,15 +184,28 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
             files_info.append(
                 {"filename": attachment["filename"], "content_type": attachment["content_type"], "file_id": file_id}
             )
+            content_type = attachment["content_type"]
+            if not (content_type.startswith(("image/", "video/"))):
+                document_files.append((attachment, data))
         except Exception as error:
             failed_attachments.append(f"{attachment['filename']} ({attachment['content_type']}): {str(error)[:160]}")
+
+    try:
+        libraries = await state_store.list_family_libraries()
+    except Exception:
+        libraries = []
 
     log_lines = [
         f"{entry.get('ts', '')} | {entry.get('chat', '')} | {entry.get('sender', '')}: {entry.get('summary', '')}"
         for entry in state.get("log", [])[-LOG_CONTEXT_ENTRIES:]
     ]
     envelope = build_envelope(
-        message, files_info, log_lines, audio_transcripts=audio_transcripts, failed_attachments=failed_attachments
+        message,
+        files_info,
+        log_lines,
+        audio_transcripts=audio_transcripts,
+        failed_attachments=failed_attachments,
+        libraries=libraries,
     )
 
     chat_state = state.setdefault("chats", {}).setdefault(message["chat_key"], {})
@@ -203,7 +221,20 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
         chat_state["session_key"] = session_key
         session = await agent.start_session(idempotency_key=session_key)
 
-    record = await session.run(envelope, idempotency_key=f"signal-msg:{message['key']}")
+    import asyncio
+
+    record = None
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            record = await session.run(envelope, idempotency_key=f"signal-msg:{message['key']}")
+            break
+        except Exception as error:
+            last_error = error
+            if attempt < 2:
+                await asyncio.sleep(10 * (attempt + 1))
+    if record is None:
+        raise last_error
     if isinstance(record, agents.Busy):
         record = await record.turn.result()
 
@@ -233,8 +264,39 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     if reply_text or attachments_out:
         await signal_client.send(message["recipients"], reply_text, attachments_out or None)
 
+    filed_notes: list[str] = []
+    if document_files:
+        try:
+            if not libraries:
+                libraries = await state_store.list_family_libraries()
+            for attachment, data in document_files:
+                try:
+                    decision = await state_store.classify_document(
+                        attachment["filename"],
+                        attachment["content_type"],
+                        data,
+                        libraries,
+                        context=f"{message['sender_name']} im Chat {message['chat_label']}",
+                    )
+                    library_id = decision.get("library_id")
+                    if library_id:
+                        await state_store.upload_document_to_library(
+                            library_id, attachment["filename"], attachment["content_type"], data
+                        )
+                        library_name = next((lib["name"] for lib in libraries if lib["id"] == library_id), library_id)
+                        filed_notes.append(
+                            f"Dokument '{attachment['filename']}' in Library '{library_name}' abgelegt ({decision.get('reason', '')})"
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    summary = _truncate(f"{message['text'] or '(Anhang)'} -> {reply_text or '(Bild)'}")
+    summary = _truncate(
+        f"{message['text'] or '(Anhang)'} -> {reply_text or '(Bild)'}"
+        + (" | " + "; ".join(filed_notes) if filed_notes else "")
+    )
     state.setdefault("log", []).append(
         {"ts": now, "chat": message["chat_label"], "sender": message["sender_name"], "summary": summary}
     )
@@ -255,7 +317,14 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
         pass
 
     status = "ok" if isinstance(record, agents.Completed) else type(record).__name__
-    return {"key": message["key"], "status": status, "chat": message["chat_key"], "reply_chars": len(reply_text), "images": len(attachments_out)}
+    return {
+        "key": message["key"],
+        "status": status,
+        "chat": message["chat_key"],
+        "reply_chars": len(reply_text),
+        "images": len(attachments_out),
+        "filed": len(filed_notes),
+    }
 
 
 @workflows.workflow.define(
