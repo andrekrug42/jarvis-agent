@@ -125,13 +125,16 @@ def normalize(entry: dict) -> dict | None:
         "text": dm.get("message") or "",
         "attachments": attachments,
         "recipients": recipients,
+        "receipt_recipient": group_id if group_id else (source_number or source_uuid),
     }
 
 
 async def receive() -> list[dict]:
     """ Holt neue Nachrichten von der Signal-REST-API ab (v1/receive dequeued). """
     base, number, headers = _config()
-    response = await _request("GET", f"/v1/receive/{number}", base, headers, RECEIVE_TIMEOUT_SECONDS)
+    response = await _request(
+        "GET", f"/v1/receive/{number}?send_read_receipts=true", base, headers, RECEIVE_TIMEOUT_SECONDS
+    )
     entries = response.json()
     messages = []
     for entry in entries or []:

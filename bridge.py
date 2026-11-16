@@ -191,8 +191,8 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     try:
         await signal_client.send_typing(message["recipients"], stop=True)
         if message.get("timestamp"):
-            for recipient in message["recipients"]:
-                await signal_client.send_read_receipt(recipient, message["timestamp"])
+            target = message.get("receipt_recipient") or message["recipients"][0]
+            await signal_client.send_read_receipt(target, message["timestamp"])
     except Exception:
         pass
 
