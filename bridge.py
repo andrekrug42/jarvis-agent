@@ -24,10 +24,7 @@ async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
     base_url = os.environ.get("AGENTS_SDK_DEPLOY_CONTROL_PLANE_URL", "https://api.mistral.ai/v2/agents").rstrip("/")
     preferred = os.environ.get("JARVIS_DEPLOYMENT_NAME", "").strip() or agent_name
     async with AgentsClient(base_url=base_url, api_key=user_api_key, timeout_seconds=60) as client:
-        try:
-            response = await client.register_agent(agent_name=agent_name, workflow_name=agent_name, deployment_name=preferred)
-        except Exception:
-            response = await client.register_agent(agent_name=agent_name, workflow_name=agent_name)
+        response = await client.register_agent(agent_name=agent_name, workflow_name=agent_name, deployment_name=preferred)
     _agent_registered = True
     return response.deployment_name
 
