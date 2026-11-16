@@ -88,7 +88,14 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     import state_store
 
     agent_name = os.environ.get("JARVIS_AGENT_NAME", "jarvis")
-    agent = agents.Agent.load_from(agent_name=agent_name)
+    token_path = os.environ.get("MISTRAL_SA_TOKEN_PATH", "")
+    if token_path and os.path.exists(token_path):
+        with open(token_path, encoding="utf-8") as handle:
+            sa_token = handle.read().strip()
+        client = agents.Client(api_key=sa_token) if sa_token else agents.Client()
+    else:
+        client = agents.Client()
+    agent = agents.Agent.load_from(agent_name=agent_name, client=client)
 
     state = await state_store.load()
     if message["key"] in state.get("processed", []):
