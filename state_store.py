@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 
 LIBRARY_NAME = "jarvis-bridge-state"
@@ -7,6 +8,11 @@ STATE_DOC_NAME = "jarvis-state.md"
 
 
 def _mistral_client():
+    api_key = os.environ.get("JARVIS_AGENT_API_KEY", "").strip()
+    if api_key:
+        from mistralai import Mistral
+
+        return Mistral(api_key=api_key)
     from mistralai.workflows.client import get_mistral_client
     from mistralai.workflows.core.auth import RunAs
 
