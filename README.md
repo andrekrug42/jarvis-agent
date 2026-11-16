@@ -23,6 +23,8 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
                                      └──────────────────────────────┘
 ```
 
+![Architektur](docs/architecture.svg)
+
 - **Agent `jarvis`** (`main.py`): Modell `mistral-large-4`, Persona und Regeln in den Instructions.
 - **Bridge-Workflow `jarvis-signal-bridge`** (`bridge.py`): wird alle 15 s per Schedule ausgeführt,
   pollt `GET /v1/receive/{number}`, verarbeitet jede neue Nachricht und antwortet über `POST /v2/send`.
@@ -61,29 +63,41 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
 
 ```bash
 # 1. lokal testen (optional)
-cp .env.example .env   # MISTRAL_API_KEY + SIGNAL_* eintragen
+cp .env.example .env   # MISTRAL_API_KEY eintragen
 uv sync
 uv run --env-file .env agents info
-uv run --env-file .env agents serve &      # lokaler Worker
 uv run --env-file .env python -c "import bridge"  # Bridge importieren (Syntax/Discovery)
 
-# 2. deployen (baut aus dem gepushten Commit)
-uv run --env-file .env agents deploy . --name jarvis \
-  --secret-binding SIGNAL_API_URL=secret:workspace:signal_api_url \
-  --secret-binding SIGNAL_PHONE_NUMBER=secret:workspace:signal_phone_number \
-  --secret-binding SIGNAL_USERNAME=secret:workspace:signal_username \
-  --secret-binding SIGNAL_PASSWORD=secret:workspace:signal_password
+# 2. Agenten deployen – WICHTIG: nur `agents deploy` registriert die Agent-Entität
+#    (ein reines Workflows-Deployment via MCP tut das nicht; dann schlägt
+#    Agent.load_from(agent_name="jarvis") mit "Unknown agent name" fehl).
+uv run --env-file .env agents deploy . --name jarvis
+#    baut aus dem gepushten Commit (Dockerfile, CMD agents run-worker), wartet bis "live"
 ```
 
-Gleichwertig geht das Deployment über die Workflows-API/MCP
-(`deploy_workflow_deployment` mit `github_url`, `revision` = Commit-SHA, `deployment_name="jarvis"`
-und `secrets=[{env_var_name: "SIGNAL_API_URL", secret_name: "signal_api_url"}, …]`).
+Die **Bridge** (`jarvis-bridge`) wird dagegen als reines Workflows-Deployment angelegt,
+z. B. über die Workflows-API/MCP:
 
-Danach den Bridge-Workflow **schedulen** (alle 15 s, UTC):
+```
+deploy_workflow_deployment(
+  deployment_name="jarvis-bridge",
+  github_url="https://github.com/andrekrug42/jarvis-agent",
+  revision=<Commit-SHA>,
+  build_directory=".",
+  dockerfile_path="Dockerfile.bridge",
+)
+# Secrets in der Studio-UI binden (Deployment jarvis-bridge → Settings → Secrets):
+#   SIGNAL_API_URL ← signal_api_url, SIGNAL_PHONE_NUMBER ← signal_phone_number,
+#   SIGNAL_USERNAME ← signal_username, SIGNAL_PASSWORD ← signal_password,
+#   JARVIS_AGENT_API_KEY ← jarvis_agent_api_key
+# dann Deployment neu starten (stop/start), damit die Env-Variablen injiziert werden
+```
+
+Danach den Bridge-Workflow **schedulen** (alle 15 s):
 
 ```
 workflow_identifier: jarvis-signal-bridge
-deployment_name: jarvis
+deployment_name: jarvis-bridge
 schedule: { input: {}, intervals: [{ every: "PT15S" }], policy: { overlap: 2 } }
 ```
 
