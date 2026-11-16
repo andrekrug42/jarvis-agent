@@ -223,18 +223,30 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
 
     import asyncio
 
-    record = None
-    last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            record = await session.run(envelope, idempotency_key=f"signal-msg:{message['key']}")
-            break
-        except Exception as error:
-            last_error = error
-            if attempt < 2:
-                await asyncio.sleep(10 * (attempt + 1))
-    if record is None:
+    async def _run_with_retry(sess, turn_key: str):
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                return await sess.run(envelope, idempotency_key=turn_key)
+            except Exception as error:
+                last_error = error
+                if attempt < 2:
+                    await asyncio.sleep(10 * (attempt + 1))
         raise last_error
+
+    try:
+        record = await _run_with_retry(session, f"signal-msg:{message['key']}")
+    except Exception:
+        # Session evtl. an einen toten Worker gebunden (503 / OutcomeUnknown nach Redeploy):
+        # neue Session ueber Epoch-Schluessel versuchen, damit der Chat wieder antwortet.
+        if user_api_key:
+            _agent_registered = False
+            await ensure_agent_registered(agent_name, user_api_key)
+        chat_state["session_epoch"] = int(chat_state.get("session_epoch", 0)) + 1
+        session_key = f"signal-chat:{message['chat_key']}:e{chat_state['session_epoch']}"
+        chat_state["session_key"] = session_key
+        session = await agent.start_session(idempotency_key=session_key)
+        record = await _run_with_retry(session, f"signal-msg:{message['key']}")
     if isinstance(record, agents.Busy):
         record = await record.turn.result()
 
