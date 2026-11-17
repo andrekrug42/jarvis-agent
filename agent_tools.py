@@ -39,6 +39,20 @@ def _mistral_client():
     return get_mistral_client(run_as=RunAs.DEPLOYMENT)
 
 
+def _as_tool_error(fn):
+    # Fehler als agents.ToolError weiterreichen, damit das Modell die echte Meldung sieht
+    # (sonst nur "unexpected error") und wir sie ueber den State-Log diagnostizieren koennen.
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except agents.ToolError:
+            raise
+        except Exception as exc:
+            raise agents.ToolError(f"{type(exc).__name__}: {str(exc)[:800]}") from exc
+
+    return wrapper
+
+
 def _download_file(client, file_id: str) -> bytes:
     response = client.files.download(file_id=file_id)
     if hasattr(response, "read"):
@@ -92,7 +106,7 @@ async def describe_image(file_id: str, question: str = "Beschreibe das Bild ausf
         content = response.choices[0].message.content
         return content if isinstance(content, str) else str(content)
 
-    return await asyncio.to_thread(_run)
+    return await asyncio.to_thread(_as_tool_error(_run))
 
 
 @agents.tool
@@ -105,7 +119,7 @@ async def read_document(file_id: str, question: str = "") -> str:
     def _download() -> bytes:
         return _download_file(_mistral_client(), file_id)
 
-    data = await asyncio.to_thread(_download)
+    data = await asyncio.to_thread(_as_tool_error(_download))
 
     def _ocr() -> str:
         client = _mistral_client()
@@ -120,7 +134,7 @@ async def read_document(file_id: str, question: str = "") -> str:
             text = text[:MAX_DOCUMENT_CHARS] + "\n\n[... Dokument gekürzt ...]"
         return text
 
-    text = await asyncio.to_thread(_ocr)
+    text = await asyncio.to_thread(_as_tool_error(_ocr))
 
     if question:
         def _qa() -> str:
@@ -138,7 +152,7 @@ async def read_document(file_id: str, question: str = "") -> str:
             content = response.choices[0].message.content
             return content if isinstance(content, str) else str(content)
 
-        return await asyncio.to_thread(_qa)
+        return await asyncio.to_thread(_as_tool_error(_qa))
 
     return text or "(Das Dokument enthielt keinen erkennbaren Text.)"
 
@@ -219,7 +233,7 @@ async def web_search(query: str) -> str:
     def _run():
         return _conversation_sync(SEARCH_MODEL, [{"type": "web_search"}], query)
 
-    response = await asyncio.to_thread(_run)
+    response = await asyncio.to_thread(_as_tool_error(_run))
     text, urls = _conversation_text(response)
     if not text:
         return "(Die Websuche lieferte keine Antwort.)"
@@ -238,7 +252,7 @@ async def generate_image(prompt: str) -> dict:
     def _run():
         return _conversation_sync(SEARCH_MODEL, [{"type": "image_generation"}], prompt)
 
-    response = await asyncio.to_thread(_run)
+    response = await asyncio.to_thread(_as_tool_error(_run))
     for output in getattr(response, "outputs", None) or []:
         dump = _dump(output)
         if isinstance(dump, dict) and dump.get("type") == "tool.execution" and "image" in str(dump.get("name", "")).lower():
@@ -309,4 +323,4 @@ async def search_knowledge(query: str) -> str:
         text, _ = _conversation_text(response)
         return text or "(In den Libraries wurde nichts Passendes gefunden.)"
 
-    return await asyncio.to_thread(_run)
+    return await asyncio.to_thread(_as_tool_error(_run))
