@@ -43,6 +43,16 @@ def _allowlist_entries() -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _name_matches(field: str, lowered: str) -> bool:
+    # "melina" matcht "Melina", "Melina Krug", "Krug, Melina" – exakt, als Wort oder als Praefix
+    field = (field or "").strip().lower()
+    if not field or not lowered:
+        return False
+    if field == lowered or field.startswith(lowered):
+        return True
+    return lowered in field.replace(",", " ").split()
+
+
 async def _list_json(path: str, base: str, headers: dict[str, str], what: str) -> list[dict]:
     try:
         response = await _request("GET", path, base, headers, 30)
@@ -85,11 +95,10 @@ async def _build_allowlist() -> _Allowlist:
             dm_ids.add(entry)
             matched = False
             for contact in contacts:
-                names = {
-                    str(contact.get(field) or "").strip().lower()
+                if any(
+                    _name_matches(str(contact.get(field) or ""), lowered)
                     for field in ("name", "given_name", "profile_name", "number", "username")
-                }
-                if lowered in names:
+                ):
                     matched = True
                     if contact.get("uuid"):
                         dm_ids.add(str(contact["uuid"]))
@@ -97,7 +106,7 @@ async def _build_allowlist() -> _Allowlist:
                         dm_ids.add(str(contact["number"]))
             for group in groups:
                 group_name = str(group.get("name") or "").strip().lower()
-                if group_name and group_name == lowered:
+                if group_name and _name_matches(group_name, lowered):
                     matched = True
                     for field in ("id", "internal_id"):
                         if group.get(field):
@@ -372,11 +381,10 @@ async def resolve_target(target: str) -> tuple[list[str], str, str]:
         names = [str(g.get("name") or g.get("id") or "?") for g in groups]
         raise ValueError(f"mehrere Gruppen gefunden ({', '.join(names)}) – bitte den Gruppennamen angeben")
     for contact in contacts:
-        names = {
-            str(contact.get(field) or "").strip().lower()
+        if any(
+            _name_matches(str(contact.get(field) or ""), lowered)
             for field in ("name", "given_name", "profile_name", "number", "username")
-        }
-        if lowered in names:
+        ):
             uuid = str(contact.get("uuid") or "")
             contact_number = str(contact.get("number") or "")
             recipient = uuid or contact_number
@@ -390,6 +398,6 @@ async def resolve_target(target: str) -> tuple[list[str], str, str]:
         gname = str(group.get("name") or "").strip().lower()
         gid = str(group.get("id") or "").lower()
         ginternal = str(group.get("internal_id") or "").lower()
-        if lowered and lowered in (gname, gid, ginternal):
+        if lowered and (lowered in (gid, ginternal) or _name_matches(gname, lowered)):
             return _group_target(group, allowlist)
     raise ValueError(f"kein Kontakt oder Gruppe namens '{target}' gefunden")

@@ -501,7 +501,14 @@ async def send_signal_message(target: str, message: str) -> str:
     try:
         recipients, chat_key, label = await signal_client.resolve_target(target)
     except Exception as exc:
-        raise agents.ToolError(f"Ziel nicht auflösbar/erlaubt: {exc}")
+        msg = str(exc)
+        if "SIGNAL_API_URL" in msg or "SIGNAL_PHONE_NUMBER" in msg:
+            raise agents.ToolError(
+                "Signal-API nicht konfiguriert: An der Agent-Deployment 'jarvis' fehlen die Secrets "
+                "signal_api_url/signal_phone_number/signal_username/signal_password (-> SIGNAL_*) und "
+                "jarvis_allowed_chats (-> JARVIS_ALLOWED_CHATS). Originalfehler: " + msg
+            )
+        raise agents.ToolError(f"Ziel nicht auflösbar/erlaubt: {msg}")
     await signal_client.send(recipients, message)
     try:
         from datetime import datetime, timezone
