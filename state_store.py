@@ -23,12 +23,27 @@ def _mistral_client():
     return get_mistral_client(run_as=RunAs.DEPLOYMENT)
 
 
+def _libraries(client):
+    # mistralai 3.x: Libraries liegt unter client.beta.libraries (nicht top-level)
+    libraries = getattr(client, "libraries", None)
+    if libraries is None:
+        libraries = client.beta.libraries
+    return libraries
+
+
+def _documents(client):
+    documents = getattr(_libraries(client), "documents", None)
+    if documents is not None:
+        return documents
+    return client.documents
+
+
 def _default_state() -> dict:
     return {"chats": {}, "log": [], "processed": []}
 
 
 def _find_library(client) -> str | None:
-    response = client.libraries.list(search=LIBRARY_NAME, page_size=100)
+    response = _libraries(client).list(search=LIBRARY_NAME, page_size=100)
     for item in response.data or []:
         if item.name == LIBRARY_NAME:
             return item.id
@@ -39,7 +54,7 @@ def _ensure_library(client) -> str:
     library_id = _find_library(client)
     if library_id:
         return library_id
-    return client.libraries.create(name=LIBRARY_NAME, description="JARVIS Signal-Bridge State (Cross-Chat-Gedaechtnis)").id
+    return _libraries(client).create(name=LIBRARY_NAME, description="JARVIS Signal-Bridge State (Cross-Chat-Gedaechtnis)").id
 
 
 def _parse_state(text: str) -> dict:
@@ -63,12 +78,12 @@ def _load_sync() -> dict:
         library_id = _find_library(client)
         if not library_id:
             return _default_state()
-        docs = client.documents.list(
+        docs = _documents(client).list(
             library_id=library_id, search=STATE_DOC_NAME, sort_by="created_at", sort_order="desc", page_size=100
         )
         for doc in docs.data or []:
             if doc.name == STATE_DOC_NAME:
-                text = client.documents.text_content(library_id=library_id, document_id=doc.id).text
+                text = _documents(client).text_content(library_id=library_id, document_id=doc.id).text
                 return _parse_state(text)
         return _default_state()
     except Exception:
@@ -79,15 +94,15 @@ def _save_sync(state: dict) -> None:
     client = _mistral_client()
     library_id = _ensure_library(client)
     content = "```json\n" + json.dumps(state, ensure_ascii=False) + "\n```"
-    new_doc = client.documents.upload(
+    new_doc = _documents(client).upload(
         library_id=library_id,
         file={"file_name": STATE_DOC_NAME, "content": content.encode("utf-8"), "content_type": "text/markdown"},
     )
-    docs = client.documents.list(library_id=library_id, search=STATE_DOC_NAME, page_size=100)
+    docs = _documents(client).list(library_id=library_id, search=STATE_DOC_NAME, page_size=100)
     for doc in docs.data or []:
         if doc.name == STATE_DOC_NAME and doc.id != new_doc.id:
             try:
-                client.documents.delete(library_id=library_id, document_id=doc.id)
+                _documents(client).delete(library_id=library_id, document_id=doc.id)
             except Exception:
                 pass
 
@@ -143,7 +158,7 @@ async def download_mistral_file(file_id: str) -> bytes:
 
 def _family_libraries_sync() -> list[dict]:
     client = _mistral_client()
-    response = client.libraries.list(page_size=100)
+    response = _libraries(client).list(page_size=100)
     libraries = []
     for item in getattr(response, "data", None) or []:
         name = getattr(item, "name", "") or ""
@@ -219,7 +234,7 @@ async def classify_document(
 
 def _upload_document_sync(library_id: str, filename: str, content_type: str, data: bytes) -> str:
     client = _mistral_client()
-    doc = client.documents.upload(
+    doc = _documents(client).upload(
         library_id=library_id, file={"file_name": filename, "content": data, "content_type": content_type}
     )
     return doc.id if not isinstance(doc, dict) else doc["id"]

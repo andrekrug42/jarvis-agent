@@ -240,6 +240,14 @@ async def generate_image(prompt: str) -> dict:
     return {"image_url": "", "error": "Die Bildgenerierung lieferte kein Ergebnis."}
 
 
+def _libraries(client):
+    # mistralai 3.x: Libraries liegt unter client.beta.libraries (nicht top-level)
+    libraries = getattr(client, "libraries", None)
+    if libraries is None:
+        libraries = client.beta.libraries
+    return libraries
+
+
 def _resolve_library_ids() -> list[str]:
     global _library_ids_cache
     if _library_ids_cache is not None:
@@ -249,7 +257,7 @@ def _resolve_library_ids() -> list[str]:
         _library_ids_cache = [part.strip() for part in env_ids.split(",") if part.strip()]
         return _library_ids_cache
     client = _mistral_client()
-    response = client.libraries.list(page_size=100)
+    response = _libraries(client).list(page_size=100)
     ids = []
     for item in getattr(response, "data", None) or []:
         name = getattr(item, "name", "") or ""
