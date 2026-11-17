@@ -18,6 +18,7 @@ MAILBOX_PROMPT = (
     "(siehe Instruktionen): ungelesene Mails (in:inbox is:unread, ohne Promotions/Social/Updates/Forums), "
     "maximal {max_messages}. Beantworte nur Mails von Familien-Absendern (Kontaktdaten) automatisch; "
     "unbekannte Absender nur vermerken, nicht beantworten. Bearbeitete Mails als gelesen markieren. "
+    "Anhänge nur bei Familien-Absendern laden/auswerten und in die passende Library ablegen; bei unbekannten nur Dateiname/Typ vermerken. "
     "Beginne deine Antwort IMMER mit einer eigenen ersten Zeile im exakten Format \"MAILS: <Anzahl>\" "
     "(Anzahl der gefundenen unbearbeiteten Mails, z. B. \"MAILS: 0\"). "
     "Danach eine kurze, natürliche Nachricht an Andre im Signal-Stil (pro Mail 1–2 Sätze: wer, worum geht's, was wurde gemacht). "

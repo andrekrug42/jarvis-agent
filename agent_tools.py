@@ -419,3 +419,67 @@ async def read_person_info(person: str) -> str:
         return _read_person_info_sync(person.strip())
 
     return await asyncio.to_thread(_as_tool_error(_run))
+
+
+@agents.tool
+async def save_mail_attachment(filename: str, content_base64: str, mime_type: str = "application/octet-stream") -> str:
+    """Speichert einen base64-kodierten Mail-Anhang aus dem gmail-Connector in der Mistral-Files-API
+    und gibt die file_id zurück — damit kann der Anhang danach mit read_document (PDF/Dokumente)
+    oder describe_image (Bilder) gelesen werden.
+
+    `filename`: Dateiname des Anhangs, z. B. "rechnung.pdf".
+    `content_base64`: base64-kodierter Inhalt (aus get_message_attachment(messageId, attachmentId) bzw. get_message mit FULL_CONTENT).
+    `mime_type`: MIME-Typ des Anhangs, z. B. "application/pdf".
+    """
+    def _run() -> str:
+        client = _mistral_client()
+        try:
+            data = base64.b64decode(content_base64, validate=False)
+        except Exception as exc:
+            raise agents.ToolError(f"base64-Dekodierung fehlgeschlagen: {exc}")
+        upload = client.files.upload(file={"file_name": filename, "content": data}, purpose="ocr")
+        file_id = upload.id if not isinstance(upload, dict) else upload["id"]
+        return f"Anhang '{filename}' in der Files-API gespeichert: file_id={file_id} ({len(data)} Bytes, {mime_type})."
+
+    return await asyncio.to_thread(_as_tool_error(_run))
+
+
+@agents.tool
+async def file_attachment_to_library(file_id: str, filename: str, person: str = "") -> str:
+    """Lädt eine Datei aus der Mistral-Files-API (file_id, z. B. von save_mail_attachment) in die passende
+    Familien-Library hoch: bei `person` in 'Dokumente zu <person>', sonst per LLM-Einschätzung
+    ('Allgemeine Dokumente' bzw. 'Sonstiges'; wenn nichts passt, wird nicht abgelegt).
+
+    `file_id`: file_id aus der Files-API.
+    `filename`: Dateiname, unter dem das Dokument in der Library abgelegt wird.
+    `person`: optional Vorname der Person, um die es geht, z. B. "Anna".
+    """
+    import mimetypes
+
+    import state_store
+
+    def _download() -> bytes:
+        return _download_file(_mistral_client(), file_id)
+
+    data = await asyncio.to_thread(_as_tool_error(_download))
+    mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    person = (person or "").strip()
+    if person:
+        def _find():
+            return _find_library_for_person(_mistral_client(), person)
+
+        found = await asyncio.to_thread(_as_tool_error(_find))
+        if not found:
+            raise agents.ToolError(f"Keine Library für '{person}' gefunden (erwartet '{FAMILY_LIBRARY_PREFIX}{person}').")
+        library_id, library_name = found
+    else:
+        libraries = await state_store.list_family_libraries()
+        decision = await state_store.classify_document(
+            filename, mime, data, libraries, context="Mail-Anhang aus dem JARVIS-Postfach"
+        )
+        library_id = decision.get("library_id")
+        library_name = next((lib["name"] for lib in libraries if lib["id"] == library_id), None)
+        if not library_id:
+            return f"Anhang '{filename}' wurde NICHT abgelegt (Einschätzung: {decision.get('reason') or 'kein Mehrwert'})."
+    doc_id = await state_store.upload_document_to_library(library_id, filename, mime, data)
+    return f"Anhang '{filename}' in Library '{library_name}' abgelegt (Dokument-ID {doc_id})."
