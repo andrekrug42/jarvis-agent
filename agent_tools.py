@@ -6,6 +6,8 @@ import re
 
 from mistralai import agents
 
+import state_store
+
 MAX_DOCUMENT_CHARS = 120_000
 
 SEARCH_MODEL = os.environ.get("JARVIS_SEARCH_MODEL", "mistral-large-4")
