@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 
 from mistralai import agents
 
@@ -529,44 +530,90 @@ async def schedule_task(when_iso: str, action: str, target: str = "") -> str:
     (z. B. Erinnerung, Posteingang prüfen, E-Mail schreiben) und schickt das Ergebnis per Signal
     in den Ziel-Chat.
 
-    `when_iso`: Zeitpunkt als ISO-8601 mit Zeitzone, z. B. "2026-11-20T18:00:00+01:00" (Europe/Berlin).
+    `when_iso`: Zeitpunkt als ISO-8601 mit Zeitzone, z. B. "2026-11-20T18:00:00+01:00" — oder
+    umgangssprachlich ("in 2 Minuten", "morgen um 8 Uhr", "21:46"); wird intern in ISO umgerechnet (Europe/Berlin).
     `action`: klarer, vollständiger Auftrag auf Deutsch, z. B. "Erinnere daran, die Wäsche aufzuhängen".
     `target`: Chat-Key aus dem KONTEXT-Block (Standardziel: derselbe Chat) oder Name/Gruppe des Empfängers.
     """
     import state_store
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     from zoneinfo import ZoneInfo
 
+    def _berlin_tz():
+        try:
+            return ZoneInfo("Europe/Berlin")
+        except Exception:
+            return timezone(timedelta(hours=1))
+
+    def _parse_when(raw: str):
+        text = (raw or "").strip()
+        candidates = [text]
+        if "T" not in text and " " in text:
+            candidates.append(text.replace(" ", "T", 1))
+        for candidate in candidates:
+            try:
+                due = datetime.fromisoformat(candidate)
+                if due.tzinfo is None:
+                    due = due.replace(tzinfo=_berlin_tz())
+                return due
+            except Exception:
+                continue
+        client = _mistral_client()
+        now_berlin = datetime.now(_berlin_tz()).strftime("%Y-%m-%d %H:%M")
+        prompt = (
+            "Wandle die folgende Zeitangabe in genau ein ISO-8601-Datum mit Zeitzone um "
+            f"(aktuelle Zeit: {now_berlin} Europe/Berlin). Antworte NUR mit dem ISO-String, z. B. 2026-11-17T21:46:00+01:00.\n"
+            f"Zeitangabe: {text}"
+        )
+        response = client.chat.complete(
+            model="mistral-large-4", messages=[{"role": "user", "content": prompt}], temperature=0
+        )
+        content = response.choices[0].message.content
+        raw_out = content if isinstance(content, str) else str(content)
+        match = re.search(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?([+-]\d{2}:?\d{2}|Z)?", raw_out)
+        if not match:
+            raise agents.ToolError(f"Zeitangabe nicht verstanden: {text!r} (LLM: {raw_out[:120]})")
+        iso = match.group(0).replace(" ", "T")
+        if iso.endswith("Z"):
+            iso = iso[:-1] + "+00:00"
+        due = datetime.fromisoformat(iso)
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=_berlin_tz())
+        return due
+
     try:
-        due = datetime.fromisoformat(when_iso.strip())
-    except Exception:
-        raise agents.ToolError(f"when_iso ist kein gültiges ISO-8601-Datum: {when_iso!r}")
-    if due.tzinfo is None:
-        due = due.replace(tzinfo=ZoneInfo("Europe/Berlin"))
-    now = datetime.now(timezone.utc)
-    due_ts = due.timestamp()
-    if due_ts < now.timestamp() + 30:
-        raise agents.ToolError("Zeitpunkt liegt in der Vergangenheit (mindestens +30 Sekunden ab jetzt)")
-    task = {
-        "id": f"task-{int(now.timestamp() * 1000)}",
-        "due": due_ts,
-        "due_iso": due.isoformat(),
-        "action": action.strip()[:2000],
-        "target": target.strip(),
-        "status": "pending",
-        "created": now.timestamp(),
-    }
-    state = await state_store.load()
-    tasks = state.setdefault("tasks", [])
-    open_count = sum(1 for t in tasks if t.get("status") in ("pending", "running"))
-    if open_count >= 100:
-        raise agents.ToolError("zu viele offene Aufgaben (max. 100) – alte erledigen lassen oder aufräumen")
-    tasks.append(task)
-    state["tasks"] = [
-        t for t in tasks if t.get("status") in ("pending", "running") or now.timestamp() - float(t.get("finished", now.timestamp())) < 7 * 86400
-    ][-200:]
-    await state_store.save(state)
-    return (
-        f"Aufgabe angelegt ✅ {due.strftime('%d.%m.%Y um %H:%M')} ({due.tzinfo}) – „{action.strip()[:120]}“"
-        f" (Ziel: {target.strip() or 'aktueller Chat'})"
-    )
+        due = await asyncio.to_thread(_parse_when, when_iso)
+        now = datetime.now(timezone.utc)
+        due_ts = due.timestamp()
+        if due_ts < now.timestamp() + 30:
+            raise agents.ToolError("Zeitpunkt liegt in der Vergangenheit (mindestens +30 Sekunden ab jetzt)")
+        task = {
+            "id": f"task-{int(now.timestamp() * 1000)}",
+            "due": due_ts,
+            "due_iso": due.isoformat(),
+            "action": action.strip()[:2000],
+            "target": target.strip(),
+            "status": "pending",
+            "created": now.timestamp(),
+        }
+        state = await state_store.load()
+        tasks = state.setdefault("tasks", [])
+        open_count = sum(1 for t in tasks if t.get("status") in ("pending", "running"))
+        if open_count >= 100:
+            raise agents.ToolError("zu viele offene Aufgaben (max. 100) – alte erledigen lassen oder aufräumen")
+        tasks.append(task)
+        state["tasks"] = [
+            t
+            for t in tasks
+            if t.get("status") in ("pending", "running")
+            or now.timestamp() - float(t.get("finished", now.timestamp())) < 7 * 86400
+        ][-200:]
+        await state_store.save(state)
+        return (
+            f"Aufgabe angelegt ✅ {due.strftime('%d.%m.%Y um %H:%M')} ({due.tzname()}) – „{action.strip()[:120]}“"
+            f" (Ziel: {target.strip() or 'aktueller Chat'})"
+        )
+    except agents.ToolError:
+        raise
+    except Exception as exc:
+        raise agents.ToolError(f"{type(exc).__name__}: {str(exc)[:800]}") from exc
