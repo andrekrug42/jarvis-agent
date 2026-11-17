@@ -18,8 +18,10 @@ MAILBOX_PROMPT = (
     "(siehe Instruktionen): ungelesene Mails (in:inbox is:unread, ohne Promotions/Social/Updates/Forums), "
     "maximal {max_messages}. Beantworte nur Mails von Familien-Absendern (Kontaktdaten) automatisch; "
     "unbekannte Absender nur vermerken, nicht beantworten. Bearbeitete Mails als gelesen markieren. "
-    "Antworte am Ende mit einer kurzen Zusammenfassung (pro Mail: Absender, Betreff, Aktion) – "
-    "diese Zusammenfassung wird Andre in Signal geschickt."
+    "Beginne deine Antwort IMMER mit einer eigenen ersten Zeile im exakten Format \"MAILS: <Anzahl>\" "
+    "(Anzahl der gefundenen unbearbeiteten Mails, z. B. \"MAILS: 0\"). "
+    "Danach eine kurze Zusammenfassung (pro Mail: Absender, Betreff, Aktion). "
+    "Nur bei MAILS > 0 schickt die Bridge eine Benachrichtigung als Signal-DM an Andre."
 )
 
 _agent_registered = False
@@ -40,6 +42,13 @@ def _mailbox_settings() -> tuple[int, int]:
     except ValueError:
         max_messages = DEFAULT_MAILBOX_MAX_MESSAGES
     return interval, max_messages
+
+
+def _parse_mail_count(preview: str) -> int | None:
+    import re
+
+    match = re.search(r"MAILS:\s*(\d+)", preview)
+    return int(match.group(1)) if match else None
 
 
 async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
@@ -443,7 +452,8 @@ async def _mailbox_check() -> dict[str, Any] | None:
     await state_store.save(state)
     owner = _owner_dm_recipient()
     preview = (detail.get("reply_preview") or "").strip()
-    if owner and preview:
+    mail_count = _parse_mail_count(preview)
+    if owner and preview and mail_count != 0:
         try:
             await signal_client.send([owner], f"📬 Posteingang geprüft:\n{preview}")
         except Exception:
