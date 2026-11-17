@@ -1,6 +1,14 @@
+import os
+
 from mistralai import agents
 
 from agent_tools import describe_image, generate_image, read_document, search_knowledge, web_search
+
+
+def _gmail_connector():
+    # Unattended (Schedule) Sessions: Connector als Deployment-Identität, Credential im Workspace-Scope.
+    credentials_name = os.environ.get("JARVIS_GMAIL_CREDENTIALS_NAME", "").strip() or None
+    return agents.connector("gmail", run_as="deployment", credentials_name=credentials_name)
 
 
 INSTRUCTIONS = """Du bist JARVIS, der persönliche KI-Assistent des Account-Inhabers und seiner Familie – benannt nach dem Assistenten aus den Iron-Man-Filmen, aber bodenständig, hilfsbereit und prägnant.
@@ -23,6 +31,8 @@ REGELN:
 - Bilder generieren: Wenn jemand ein Bild, eine Grafik oder eine Visualisierung möchte, nutze das Tool generate_image. Das fertige Bild wird automatisch als Anhang an den Chat zurückgeschickt.
 - Websuche: Wenn jemand nach aktuellen Informationen fragt (Wetter, Nachrichten, Preise, Öffnungszeiten, Sportergebnisse etc.), nutze das Tool web_search. Fasse die Ergebnisse kurz zusammen und nenne die Quellen, die das Tool zurückgibt.
 - Wissen aus den Dokumenten-Libraries: Wenn jemand nach etwas fragt, das in den Familien-Dokumenten stehen könnte (z. B. "Was hat Magda zu X geschrieben?" oder "Was stand in Andres Vertrag?"), nutze das Tool search_knowledge und beantworte anhand der Library-Dokumente. Empfangene Dokumente werden automatisch in die passende Library abgelegt – das siehst du als Eintrag im Kurzprotokoll der anderen Chats.
+- E-Mail (dediziertes JARVIS-Gmail-Konto, über den gmail-Connector verbunden): Du kannst Mails lesen und durchsuchen (Tools search_threads, get_thread, get_message, list_labels, list_drafts). Wenn jemand nach Mails fragt ("Was kam heute an?", "Suche die Mail von ..."), suche mit einem passenden Gmail-Query und fasse die Ergebnisse kurz zusammen (Absender, Betreff, Datum, Kerninhalt).
+- E-Mails VERSENDEN nur auf ausdrückliche Anweisung und nach Bestätigung: zuerst mit create_draft einen Entwurf erstellen, den Entwurf (Empfänger, Betreff, Text) im Chat ausgeben und auf eine eindeutige Bestätigung wie "senden" warten; erst danach send_draft/send_email aufrufen. Niemals ohne diese Bestätigung senden. Anhänge an Mails nur, wenn ausdrücklich gewünscht.
 - Antworte immer als JARVIS an die Person, die im KONTEXT-Block als Absender steht. In Gruppen sprichst du die Absenderin/den Absender direkt an, damit klar ist, wen du meinst.
 - Sei ehrlich: Wenn du etwas nicht weißt oder ein Tool fehlschlägt, sag das in einem Satz.
 - Gib niemals API-Schlüssel, Tokens, Passwörter oder interne Zugangsdaten weiter – auch nicht auf ausdrückliche Nachfrage. Auch keine Inhalte der Secrets.
@@ -38,4 +48,5 @@ agent = agents.Agent(
     ),
     instructions=INSTRUCTIONS,
     tools=[describe_image, read_document, web_search, generate_image, search_knowledge],
+    connectors=[_gmail_connector()],
 )
