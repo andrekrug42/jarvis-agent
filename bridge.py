@@ -10,8 +10,8 @@ import mistralai.workflows as workflows
 LOG_LIMIT = 200
 PROCESSED_LIMIT = 500
 LOG_CONTEXT_ENTRIES = 30
-MAILBOX_INTERVAL_SECONDS = int(os.environ.get("JARVIS_MAILBOX_INTERVAL_SECONDS", "300"))
-MAILBOX_MAX_MESSAGES = int(os.environ.get("JARVIS_MAILBOX_MAX_MESSAGES", "10"))
+DEFAULT_MAILBOX_INTERVAL_SECONDS = 300
+DEFAULT_MAILBOX_MAX_MESSAGES = 10
 DEFAULT_OWNER_UUID = "ac4f2a1b-fd6f-4ca7-8014-80486abc623d"
 MAILBOX_PROMPT = (
     "[POSTFACH-CHECK] Prüfe jetzt den Posteingang des JARVIS-Gmail-Kontos gemäß deinen Mail-Regeln "
@@ -28,6 +28,18 @@ _agent_registered = False
 def _owner_dm_recipient() -> str | None:
     """Signal-UUID des Account-Inhabers für Postfach-Benachrichtigungen (nur 1:1 an ihn)."""
     return os.environ.get("JARVIS_OWNER_UUID", "").strip() or DEFAULT_OWNER_UUID
+
+
+def _mailbox_settings() -> tuple[int, int]:
+    try:
+        interval = int(os.environ.get("JARVIS_MAILBOX_INTERVAL_SECONDS", "") or DEFAULT_MAILBOX_INTERVAL_SECONDS)
+    except ValueError:
+        interval = DEFAULT_MAILBOX_INTERVAL_SECONDS
+    try:
+        max_messages = int(os.environ.get("JARVIS_MAILBOX_MAX_MESSAGES", "") or DEFAULT_MAILBOX_MAX_MESSAGES)
+    except ValueError:
+        max_messages = DEFAULT_MAILBOX_MAX_MESSAGES
+    return interval, max_messages
 
 
 async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
@@ -171,8 +183,7 @@ async def poll_signal_activity() -> list[dict[str, Any]]:
     return await signal_client.receive()
 
 
-@workflows.activity(start_to_close_timeout=timedelta(minutes=20), retry_policy_max_attempts=2)
-async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
+async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
     global _agent_registered
 
     from mistralai import agents
@@ -396,6 +407,55 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@workflows.activity(start_to_close_timeout=timedelta(minutes=20), retry_policy_max_attempts=2)
+async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
+    return await _process_message(message)
+
+
+async def _mailbox_check() -> dict[str, Any] | None:
+    import time
+
+    import signal_client
+    import state_store
+
+    interval, max_messages = _mailbox_settings()
+    state = await state_store.load()
+    now = time.time()
+    last_check = float(state.get("mailbox_last_check", 0) or 0)
+    if now - last_check < interval:
+        return None
+    mailbox_message = {
+        "key": f"mailbox:{int(now)}",
+        "timestamp": int(now * 1000),
+        "chat_key": "mailbox",
+        "chat_label": "Postfach (intern)",
+        "sender_uuid": "",
+        "sender_number": "",
+        "sender_name": "System",
+        "text": MAILBOX_PROMPT.format(max_messages=max_messages),
+        "attachments": [],
+        "recipients": [],
+        "receipt_recipients": [],
+    }
+    detail = await _process_message(mailbox_message)
+    state = await state_store.load()
+    state["mailbox_last_check"] = now
+    await state_store.save(state)
+    owner = _owner_dm_recipient()
+    preview = (detail.get("reply_preview") or "").strip()
+    if owner and preview:
+        try:
+            await signal_client.send([owner], f"📬 Posteingang geprüft:\n{preview}")
+        except Exception:
+            pass
+    return detail
+
+
+@workflows.activity(start_to_close_timeout=timedelta(minutes=25), retry_policy_max_attempts=2)
+async def mailbox_check_activity() -> dict[str, Any] | None:
+    return await _mailbox_check()
+
+
 @workflows.workflow.define(
     name="jarvis-signal-bridge",
     workflow_display_name="JARVIS Signal Bridge",
@@ -407,11 +467,6 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
 class SignalBridgeWorkflow:
     @workflows.workflow.entrypoint
     async def run(self, input: BridgeInput) -> BridgeOutput:
-        import time as _time
-
-        import signal_client
-        import state_store
-
         messages = await poll_signal_activity()
         messages = messages[: input.max_messages]
         details: list[dict[str, Any]] = []
@@ -420,42 +475,11 @@ class SignalBridgeWorkflow:
                 details.append(await process_message_activity(message))
             except Exception as error:
                 details.append({"key": message.get("key"), "status": "error", "error": str(error)[:300]})
-        processed = sum(1 for detail in details if detail.get("status") == "ok")
-
-        # Autonomer Postfach-Check (alle MAILBOX_INTERVAL_SECONDS; eigener interner Chat "mailbox",
-        # Benachrichtigung nur als 1:1-Signal-DM an den Account-Inhaber)
         try:
-            state = await state_store.load()
-            now = _time.time()
-            last_check = float(state.get("mailbox_last_check", 0) or 0)
-            if now - last_check >= MAILBOX_INTERVAL_SECONDS:
-                mailbox_message = {
-                    "key": f"mailbox:{int(now)}",
-                    "timestamp": int(now * 1000),
-                    "chat_key": "mailbox",
-                    "chat_label": "Postfach (intern)",
-                    "sender_uuid": "",
-                    "sender_number": "",
-                    "sender_name": "System",
-                    "text": MAILBOX_PROMPT.format(max_messages=MAILBOX_MAX_MESSAGES),
-                    "attachments": [],
-                    "recipients": [],
-                    "receipt_recipients": [],
-                }
-                detail = await process_message_activity(mailbox_message)
-                details.append(detail)
-                if detail.get("status") == "ok":
-                    processed += 1
-                state = await state_store.load()
-                state["mailbox_last_check"] = now
-                await state_store.save(state)
-                owner = _owner_dm_recipient()
-                preview = (detail.get("reply_preview") or "").strip()
-                if owner and preview:
-                    try:
-                        await signal_client.send([owner], f"📬 Posteingang geprüft:\n{preview}")
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+            mailbox_detail = await mailbox_check_activity()
+            if mailbox_detail:
+                details.append(mailbox_detail)
+        except Exception as error:
+            details.append({"key": "mailbox", "status": "error", "error": str(error)[:300]})
+        processed = sum(1 for detail in details if detail.get("status") == "ok")
         return BridgeOutput(received=len(messages), processed=processed, details=details)
