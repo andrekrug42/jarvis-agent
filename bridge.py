@@ -59,6 +59,41 @@ def _strip_mail_marker(preview: str) -> str:
     return re.sub(r"^MAILS:\s*\d+\s*[-–—:]?\s*", "", preview, count=1).strip()
 
 
+async def _merge_agent_writes(state: dict[str, Any]) -> None:
+    # Der Agent schreibt waehrend _process_message (send_signal_message/schedule_task) direkt
+    # in den State (eigener load+save). Unser lokaler Snapshot ist danach aelter und wuerde diese
+    # Aenderungen beim naechsten save wieder loeschen. Deshalb vor dem save die frischen
+    # outbox/tasks-Eintraege uebernehmen; bei bekannten IDs gewinnt der lokale Stand
+    # (z. B. Task-Status "done", den wir nach dem Agenten-Lauf setzen).
+    import state_store
+
+    try:
+        fresh = await state_store.load()
+    except Exception:
+        return
+    for key in ("outbox", "tasks"):
+        fresh_list = fresh.get(key)
+        if not isinstance(fresh_list, list):
+            continue
+        local_list = state.get(key)
+        if not isinstance(local_list, list):
+            state[key] = fresh_list
+            continue
+        local_by_id = {item.get("id"): item for item in local_list if isinstance(item, dict)}
+        merged: list[Any] = []
+        seen: set[Any] = set()
+        for item in fresh_list:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id")
+            merged.append(local_by_id.get(item_id, item))
+            seen.add(item_id)
+        for item in local_list:
+            if isinstance(item, dict) and item.get("id") not in seen:
+                merged.append(item)
+        state[key] = merged
+
+
 async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
     """Registriert den Agenten einmalig beim Control Plane (idempotentes Upsert) und gibt den Queue-/Deployment-Namen zurück, an den er gebunden ist.
 
@@ -405,6 +440,7 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
     state["log"] = state["log"][-LOG_LIMIT:]
     state.setdefault("processed", []).append(message["key"])
     state["processed"] = state["processed"][-PROCESSED_LIMIT:]
+    await _merge_agent_writes(state)
     try:
         await state_store.save(state)
     except Exception:
@@ -563,6 +599,7 @@ async def _run_due_tasks() -> list[dict[str, Any]]:
             for t in state.get("tasks", [])
             if t.get("status") in ("pending", "running") or now - float(t.get("finished", now)) < 7 * 86400
         ][-200:]
+        await _merge_agent_writes(state)
         try:
             await state_store.save(state)
         except Exception:
