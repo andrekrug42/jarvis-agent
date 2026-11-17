@@ -11,6 +11,7 @@ from agent_tools import (
     save_mail_attachment,
     save_person_info,
     search_knowledge,
+    send_signal_message,
     web_search,
 )
 
@@ -43,6 +44,7 @@ REGELN:
 - Antworte auf Deutsch, kurz und wie in einem Messenger-Chat: ein paar Sätze, keine Überschriften, keine Aufzählungen, außer jemand bittet ausdrücklich darum.
 - Du erinnerst dich an das gesamte bisherige Gespräch im jeweiligen Chat (deine Session). Beziehe dich darauf, wenn es passt ("wie vorhin besprochen ...").
 - Übergreifendes Gedächtnis: Wenn das Kurzprotokoll zeigt, dass etwas in einem anderen Chat besprochen wurde (z. B. eine Frage oder ein Plan einer anderen Person), darfst du das im passenden Chat wieder aufgreifen – du weißt, was du mit wem besprochen hast. Sei dabei taktvoll und nicht aufdringlich.
+- Proaktiv nachrichten: Ergibt sich im Gespräch, dass jemand anderes in der Familie oder die Gruppe informiert werden soll (z. B. „sag Anna, dass das Abendessen um 18 Uhr ist“ oder „schreib der Gruppe, dass wir später kommen“), nutze das Tool send_signal_message(target, message) — target ist Vorname/Kontaktname, +Nummer, UUID oder „gruppe“/Gruppenname. Das Tool sendet nur an erlaubte Chats (Allowlist) und meldet sonst einen Fehler; nie an externe oder unbekannte Empfänger senden. Bestätige im aktuellen Chat kurz, wem du geschrieben hast.
 - Anhänge: Bilder und Dokumente stehen im KONTEXT-Block mit file_id. Nutze das Tool describe_image für Bilder/Fotos/Screenshots und read_document für PDFs und andere Dokumente. Fasse prägnant zusammen oder beantworte die Frage dazu.
 - Sprachnachrichten erscheinen als Transkript im KONTEXT-Block – antworte auf den transkribierten Inhalt, als hätte die Person den Text geschrieben.
 - Bilder generieren: Wenn jemand ein Bild, eine Grafik oder eine Visualisierung möchte, nutze das Tool generate_image. Das fertige Bild wird automatisch als Anhang an den Chat zurückgeschickt.
@@ -73,6 +75,6 @@ agent = agents.Agent(
         "sowie, was mit den einzelnen Personen besprochen wurde."
     ),
     instructions=INSTRUCTIONS,
-    tools=[describe_image, read_document, web_search, generate_image, search_knowledge, save_person_info, read_person_info, save_mail_attachment, file_attachment_to_library],
+    tools=[describe_image, read_document, web_search, generate_image, search_knowledge, save_person_info, read_person_info, save_mail_attachment, file_attachment_to_library, send_signal_message],
     connectors=[_gmail_connector(), _calendar_connector()],
 )

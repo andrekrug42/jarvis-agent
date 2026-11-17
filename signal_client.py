@@ -316,3 +316,77 @@ async def send_read_receipt(recipient: str, timestamp: int) -> None:
     headers = {**headers, "Content-Type": "application/json"}
     payload = {"receipt_type": "read", "recipient": recipient, "timestamp": timestamp}
     await _request("POST", f"/v1/receipts/{number}", base, headers, 30, json=payload)
+
+
+def _group_target(group: dict, allowlist: "_Allowlist") -> tuple[list[str], str, str]:
+    gid = str(group.get("id") or "")
+    internal = str(group.get("internal_id") or "")
+    gname = str(group.get("name") or "")
+    if not (
+        allowlist.allows(sender_uuid="", sender_number="", group_id=gid, group_name=gname)
+        or allowlist.allows(sender_uuid="", sender_number="", group_id=internal, group_name=gname)
+    ):
+        raise ValueError(f"Gruppe '{gname or gid or internal}' ist nicht in JARVIS_ALLOWED_CHATS erlaubt")
+    if gid.startswith("group."):
+        recipient = gid
+    else:
+        recipient = "group." + base64.b64encode((internal or gid).encode()).decode()
+    label = f'Gruppenchat "{gname}"' if gname else f"Gruppe {gid}"
+    return [recipient], f"group:{internal or gid}", label
+
+
+async def resolve_target(target: str) -> tuple[list[str], str, str]:
+    """Löst ein Sendeziel in v2/send-Recipients auf und prüft die Allowlist (JARVIS_ALLOWED_CHATS).
+
+    `target`: '+nummer', UUID, Kontaktname/Vorname (über /v1/contacts), 'gruppe'/'group:<name|id>'
+    oder ein Gruppenname (über /v1/groups).
+    Gibt (recipients, chat_key, label) zurück; wirft ValueError, wenn das Ziel unbekannt oder nicht erlaubt ist.
+    """
+    base, number, headers = _config()
+    allowlist = await _build_allowlist()
+    target = (target or "").strip()
+    lowered = target.lower()
+    if not target:
+        raise ValueError("leeres Ziel")
+    if target.startswith("+") or ("-" in target and len(target) == 36):
+        is_uuid = "-" in target
+        if not allowlist.allows(
+            sender_uuid=target if is_uuid else "",
+            sender_number="" if is_uuid else target,
+            group_id="",
+            group_name="",
+        ):
+            raise ValueError(f"Ziel {target} ist nicht in JARVIS_ALLOWED_CHATS erlaubt")
+        return [target], f"dm:{target}", f"1:1-Chat mit {target}"
+    if target.startswith("group:"):
+        target = target[6:].strip()
+        lowered = target.lower()
+    contacts = await _list_json(f"/v1/contacts/{number}", base, headers, "Kontakte")
+    groups = await _list_json(f"/v1/groups/{number}", base, headers, "Gruppen")
+    if lowered in ("gruppe", "group", "alle", "all", "gruppenchat"):
+        if len(groups) == 1:
+            return _group_target(groups[0], allowlist)
+        names = [str(g.get("name") or g.get("id") or "?") for g in groups]
+        raise ValueError(f"mehrere Gruppen gefunden ({', '.join(names)}) – bitte den Gruppennamen angeben")
+    for contact in contacts:
+        names = {
+            str(contact.get(field) or "").strip().lower()
+            for field in ("name", "given_name", "profile_name", "number", "username")
+        }
+        if lowered in names:
+            uuid = str(contact.get("uuid") or "")
+            contact_number = str(contact.get("number") or "")
+            recipient = uuid or contact_number
+            if not recipient:
+                raise ValueError(f"Kontakt '{target}' hat weder UUID noch Nummer")
+            if not allowlist.allows(sender_uuid=uuid, sender_number=contact_number, group_id="", group_name=""):
+                raise ValueError(f"Kontakt '{target}' ({recipient}) ist nicht in JARVIS_ALLOWED_CHATS erlaubt")
+            name = str(contact.get("name") or contact.get("given_name") or contact.get("profile_name") or recipient)
+            return [recipient], f"dm:{uuid or contact_number}", f"1:1-Chat mit {name}"
+    for group in groups:
+        gname = str(group.get("name") or "").strip().lower()
+        gid = str(group.get("id") or "").lower()
+        ginternal = str(group.get("internal_id") or "").lower()
+        if lowered and lowered in (gname, gid, ginternal):
+            return _group_target(group, allowlist)
+    raise ValueError(f"kein Kontakt oder Gruppe namens '{target}' gefunden")

@@ -483,3 +483,36 @@ async def file_attachment_to_library(file_id: str, filename: str, person: str = 
             return f"Anhang '{filename}' wurde NICHT abgelegt (Einschätzung: {decision.get('reason') or 'kein Mehrwert'})."
     doc_id = await state_store.upload_document_to_library(library_id, filename, mime, data)
     return f"Anhang '{filename}' in Library '{library_name}' abgelegt (Dokument-ID {doc_id})."
+
+
+@agents.tool
+async def send_signal_message(target: str, message: str) -> str:
+    """Sendet proaktiv eine Signal-Nachricht an ein Familienmitglied oder die Gruppe
+    (z. B. wenn jemand sagt: „sag Anna, dass das Treffen um 18 Uhr ist“ oder „schreib der Gruppe …“).
+
+    `target`: Vorname/Kontaktname (z. B. "Anna"), '+Nummer', UUID, oder 'gruppe' / Gruppenname (z. B. "Die Kruhsohs").
+    `message`: Nachrichtentext auf Deutsch.
+    Sendet NUR an Chats aus der Allowlist (JARVIS_ALLOWED_CHATS); bei nicht erlaubtem Ziel wird ein Fehler
+    zurückgegeben und nichts gesendet. Benötigt die SIGNAL_*-Umgebungsvariablen in der Deployment.
+    """
+    import signal_client
+    import state_store
+
+    try:
+        recipients, chat_key, label = await signal_client.resolve_target(target)
+    except Exception as exc:
+        raise agents.ToolError(f"Ziel nicht auflösbar/erlaubt: {exc}")
+    await signal_client.send(recipients, message)
+    try:
+        from datetime import datetime, timezone
+
+        state = await state_store.load()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        state.setdefault("log", []).append(
+            {"ts": now, "chat": label, "sender": "JARVIS (proaktiv)", "summary": message[:240]}
+        )
+        state["log"] = state["log"][-200:]
+        await state_store.save(state)
+    except Exception:
+        pass
+    return f"Erledigt ✅ Nachricht an {label} gesendet."

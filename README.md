@@ -105,7 +105,10 @@ deploy_workflow_deployment(
 # Secrets in der Studio-UI binden (Deployment jarvis-bridge → Settings → Secrets):
 #   SIGNAL_API_URL ← signal_api_url, SIGNAL_PHONE_NUMBER ← signal_phone_number,
 #   SIGNAL_USERNAME ← signal_username, SIGNAL_PASSWORD ← signal_password,
-#   JARVIS_AGENT_API_KEY ← jarvis_agent_api_key
+#   JARVIS_AGENT_API_KEY ← jarvis_agent_api_key, JARVIS_ALLOWED_CHATS ← jarvis_allowed_chats
+# Dasselbe gilt für die Agent-Deployment jarvis (damit das Tool send_signal_message proaktiv
+# Nachrichten senden darf): SIGNAL_API_URL/PHONE_NUMBER/USERNAME/PASSWORD ← signal_* und
+#   JARVIS_ALLOWED_CHATS ← jarvis_allowed_chats, JARVIS_AGENT_API_KEY ← jarvis_agent_api_key
 # dann Deployment neu starten (stop/start), damit die Env-Variablen injiziert werden
 ```
 
@@ -155,7 +158,7 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `SIGNAL_AUTH_HEADER` | nein | Header-Name für den Key, Standard `Authorization` |
 | `SIGNAL_AUTH_PREFIX` | nein | Präfix des Header-Werts, Standard `Bearer ` |
 | `SIGNAL_ALLOWED_SOURCES` | nein | kommaseparierte UUIDs/Nummern, die JARVIS beantworten darf; leer = alle |
-| `JARVIS_ALLOWED_CHATS` | nein | **Allowlist (Sicherheit)**: kommaseparierte Chats, die JARVIS beantwortet – `dm:<uuid|nummer>`, `group:<id|name>`, oder Namen (`Andre,Melina,…,group:Familie Krug`; Namen werden per `/v1/contacts` + `/v1/groups` aufgelöst). Leer = alle Chats erlaubt. Als Workspace-Secret (z. B. `jarvis_allowed_chats`) an die Bridge binden; Änderungen greifen nach Redeploy. Nicht erlaubte Chats bekommen keine Antwort, keinen Schreib-Indikator und keine Lesebestätigung |
+| `JARVIS_ALLOWED_CHATS` | nein | **Allowlist (Sicherheit)**: kommaseparierte Chats, die JARVIS beantwortet bzw. proaktiv anschreiben darf – `dm:<uuid|nummer>`, `group:<id|name>`, oder Namen (`Andre,Melina,…,group:Die Kruhsohs`; Namen werden per `/v1/contacts` + `/v1/groups` aufgelöst). Leer = alle Chats erlaubt. Als Workspace-Secret `jarvis_allowed_chats` an Bridge **und** Agent-Deployment (`jarvis`) binden; Änderungen greifen nach Redeploy. Nicht erlaubte Chats bekommen keine Antwort, keinen Schreib-Indikator, keine Lesebestätigung und keine proaktiven Nachrichten |
 | `JARVIS_AGENT_NAME` | nein | Name des Agenten, Standard `jarvis` |
 | `JARVIS_AGENT_API_KEY` | ja (Bridge) | User-API-Key für `Agent.load_from`/`start_session` (Sessions nur als User möglich); Fallback: Service-Account-Token des Deployments |
 | `JARVIS_OWNER_NAME` | nein | Name des Account-Inhabers für den Kontext |
