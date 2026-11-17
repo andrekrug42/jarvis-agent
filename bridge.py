@@ -228,6 +228,24 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     )
 
     chat_state = state.setdefault("chats", {}).setdefault(message["chat_key"], {})
+    # Agent-Redeploy erkennen: build_commit_sha des Agenten wird pro Chat gespeichert; bei Änderung
+    # neue Session-Epoche (Connectoren werden beim Session-Start aufgelöst — eine alte Session sieht
+    # neu hinzugefügte Connectoren nicht).
+    try:
+        from mistralai.vibe_agents.agents_client.client import AgentsClient
+
+        base_url = os.environ.get("AGENTS_SDK_DEPLOY_CONTROL_PLANE_URL", "https://api.mistral.ai/v2/agents").rstrip("/")
+        client_kwargs = {"api_key": user_api_key} if user_api_key else {}
+        async with AgentsClient(base_url=base_url, timeout_seconds=30, **client_kwargs) as client:
+            detail = await client.get_agent_by_name(agent_name)
+        build_sha = getattr(detail, "build_commit_sha", None)
+        if build_sha:
+            if chat_state.get("agent_build") and chat_state["agent_build"] != build_sha:
+                chat_state["session_epoch"] = int(chat_state.get("session_epoch", 0)) + 1
+                chat_state["session_key"] = f"signal-chat:{message['chat_key']}:e{chat_state['session_epoch']}"
+            chat_state["agent_build"] = build_sha
+    except Exception:
+        pass
     session_key = chat_state.get("session_key") or f"signal-chat:{message['chat_key']}"
     try:
         session = await agent.start_session(idempotency_key=session_key)
