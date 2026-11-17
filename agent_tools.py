@@ -281,6 +281,73 @@ def _libraries(client):
     return libraries
 
 
+def _documents(client):
+    documents = getattr(_libraries(client), "documents", None)
+    if documents is not None:
+        return documents
+    return client.documents
+
+
+FAMILY_LIBRARY_PREFIX = "Dokumente zu "
+CONTACT_DOC_PREFIX = "Kontaktdaten "
+
+
+def _find_library_for_person(client, person: str):
+    response = _libraries(client).list(page_size=100)
+    libraries = list(getattr(response, "data", None) or [])
+    target = f"{FAMILY_LIBRARY_PREFIX}{person}".strip().lower()
+    for item in libraries:
+        if (getattr(item, "name", "") or "").lower() == target:
+            return item.id, item.name
+    for fallback in ("Allgemeine Dokumente", "Sonstiges"):
+        for item in libraries:
+            if (getattr(item, "name", "") or "") == fallback:
+                return item.id, item.name
+    return None
+
+
+def _contact_doc_name(person: str) -> str:
+    return f"{CONTACT_DOC_PREFIX}{person}.md"
+
+
+def _save_person_info_sync(person: str, info: str) -> str:
+    client = _mistral_client()
+    found = _find_library_for_person(client, person)
+    if not found:
+        raise agents.ToolError(f"Keine Library für '{person}' gefunden (erwartet '{FAMILY_LIBRARY_PREFIX}{person}').")
+    library_id, library_name = found
+    doc_name = _contact_doc_name(person)
+    content = f"# Kontaktdaten {person}\n\n{info.strip()}\n"
+    new_doc = _documents(client).upload(
+        library_id=library_id,
+        file={"file_name": doc_name, "content": content.encode("utf-8"), "content_type": "text/markdown"},
+    )
+    new_id = new_doc.id if not isinstance(new_doc, dict) else new_doc["id"]
+    docs = _documents(client).list(library_id=library_id, search=doc_name, page_size=100)
+    for doc in getattr(docs, "data", None) or []:
+        if doc.name == doc_name and doc.id != new_id:
+            try:
+                _documents(client).delete(library_id=library_id, document_id=doc.id)
+            except Exception:
+                pass
+    return f"Kontaktdaten von {person} gespeichert in Library '{library_name}' (Dokument '{doc_name}')."
+
+
+def _read_person_info_sync(person: str) -> str:
+    client = _mistral_client()
+    found = _find_library_for_person(client, person)
+    if not found:
+        return f"(Keine Library für '{person}' gefunden.)"
+    library_id, library_name = found
+    doc_name = _contact_doc_name(person)
+    docs = _documents(client).list(library_id=library_id, search=doc_name, page_size=100)
+    for doc in getattr(docs, "data", None) or []:
+        if doc.name == doc_name:
+            text = _documents(client).text_content(library_id=library_id, document_id=doc.id).text
+            return f"[Kontaktdaten {person} – Library '{library_name}']\n{text}"
+    return f"(Noch keine Kontaktdaten für '{person}' gespeichert.)"
+
+
 def _resolve_library_ids() -> list[str]:
     global _library_ids_cache
     if _library_ids_cache is not None:
@@ -322,5 +389,33 @@ async def search_knowledge(query: str) -> str:
         )
         text, _ = _conversation_text(response)
         return text or "(In den Libraries wurde nichts Passendes gefunden.)"
+
+    return await asyncio.to_thread(_as_tool_error(_run))
+
+
+@agents.tool
+async def save_person_info(person: str, info: str) -> str:
+    """Speichert persönliche Daten einer Person dauerhaft (E-Mail, Adresse, Telefon, Geburtstag ...)
+    in deren Library ('Dokumente zu <Vorname>' als Dokument 'Kontaktdaten <Vorname>.md'), damit sie
+    später bei Mails, Einladungen und Antworten verwendet werden.
+
+    `person`: Vorname der Person, z. B. "Anna".
+    `info`: die Kontaktdaten als Text/Markdown, z. B. "E-Mail: anna@beispiel.de, Adresse: Musterstr. 1, 12345 Stadt".
+    """
+    def _run() -> str:
+        return _save_person_info_sync(person.strip(), info)
+
+    return await asyncio.to_thread(_as_tool_error(_run))
+
+
+@agents.tool
+async def read_person_info(person: str) -> str:
+    """Liest die gespeicherten Kontaktdaten einer Person (E-Mail, Adresse, Telefon ...) aus deren Library.
+    Vor dem Entwerfen von Mails/Einladungen immer zuerst aufrufen, um die richtige Adresse zu verwenden.
+
+    `person`: Vorname der Person, z. B. "Anna".
+    """
+    def _run() -> str:
+        return _read_person_info_sync(person.strip())
 
     return await asyncio.to_thread(_as_tool_error(_run))
