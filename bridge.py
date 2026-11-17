@@ -232,13 +232,13 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
     # neue Session-Epoche (Connectoren werden beim Session-Start aufgelöst — eine alte Session sieht
     # neu hinzugefügte Connectoren nicht).
     try:
-        from mistralai.vibe_agents.agents_client.client import AgentsClient
+        import httpx
 
-        base_url = os.environ.get("AGENTS_SDK_DEPLOY_CONTROL_PLANE_URL", "https://api.mistral.ai/v2/agents").rstrip("/")
-        client_kwargs = {"api_key": user_api_key} if user_api_key else {}
-        async with AgentsClient(base_url=base_url, timeout_seconds=30, **client_kwargs) as client:
-            detail = await client.get_agent_by_name(agent_name)
-        build_sha = getattr(detail, "build_commit_sha", None)
+        repo = os.environ.get("JARVIS_AGENT_REPO", "andrekrug42/jarvis-agent")
+        branch = os.environ.get("JARVIS_AGENT_BRANCH", "main")
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.get(f"https://api.github.com/repos/{repo}/commits/{branch}")
+        build_sha = resp.json().get("sha") if resp.status_code == 200 else None
         if build_sha:
             stale = chat_state.get("agent_build") != build_sha and (
                 chat_state.get("agent_build") or chat_state.get("session_key")
