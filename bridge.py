@@ -575,6 +575,87 @@ async def tasks_check_activity() -> list[dict[str, Any]]:
     return await _run_due_tasks()
 
 
+OUTBOX_MAX_PER_RUN = 10
+OUTBOX_SENDING_STALE_SECONDS = 600
+
+
+async def _drain_outbox() -> list[dict[str, Any]]:
+    import time
+
+    import signal_client
+    import state_store
+
+    now = time.time()
+    state = await state_store.load()
+    pending = []
+    for entry in state.get("outbox", []):
+        if entry.get("status") == "pending":
+            pending.append(entry)
+        elif entry.get("status") == "sending" and now - float(entry.get("started", 0)) > OUTBOX_SENDING_STALE_SECONDS:
+            entry["status"] = "pending"
+            pending.append(entry)
+    results: list[dict[str, Any]] = []
+    for entry in pending[:OUTBOX_MAX_PER_RUN]:
+        result: dict[str, Any] = {
+            "key": f"outbox:{entry.get('id')}",
+            "status": "error",
+            "chat": entry.get("target", ""),
+        }
+        entry["status"] = "sending"
+        entry["started"] = now
+        try:
+            await state_store.save(state)
+        except Exception:
+            pass
+        try:
+            recipients, chat_key, label = await signal_client.resolve_target(entry.get("target") or "")
+            await signal_client.send(recipients, entry.get("message") or "")
+            entry["status"] = "done"
+            entry["finished"] = now
+            entry["chat_key"] = chat_key
+            state.setdefault("log", []).append(
+                {
+                    "ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                    "chat": label,
+                    "sender": "JARVIS (proaktiv)",
+                    "summary": (entry.get("message") or "")[:240],
+                }
+            )
+            state["log"] = state["log"][-LOG_LIMIT:]
+            result.update({"status": "ok", "chat": chat_key})
+        except Exception as error:
+            entry["status"] = "error"
+            entry["finished"] = now
+            entry["error"] = str(error)[:300]
+            result["error"] = str(error)[:200]
+            try:
+                owner = _owner_dm_recipient()
+                if owner:
+                    await signal_client.send(
+                        [owner],
+                        f"⚠️ Nachricht an {entry.get('target')} konnte nicht gesendet werden: {str(error)[:200]}",
+                    )
+            except Exception:
+                pass
+        results.append(result)
+    if results:
+        state["outbox"] = [
+            o
+            for o in state.get("outbox", [])
+            if o.get("status") in ("pending", "sending") or now - float(o.get("finished", now)) < 7 * 86400
+        ][-100:]
+        try:
+            await state_store.save(state)
+        except Exception:
+            pass
+    return results
+
+
+@workflows.activity(start_to_close_timeout=timedelta(minutes=5), retry_policy_max_attempts=2)
+async def outbox_check_activity() -> list[dict[str, Any]]:
+    return await _drain_outbox()
+
+
 @workflows.workflow.define(
     name="jarvis-signal-bridge",
     workflow_display_name="JARVIS Signal Bridge",
@@ -594,6 +675,11 @@ class SignalBridgeWorkflow:
                 details.append(await process_message_activity(message))
             except Exception as error:
                 details.append({"key": message.get("key"), "status": "error", "error": str(error)[:300]})
+        try:
+            for outbox_result in await outbox_check_activity():
+                details.append(outbox_result)
+        except Exception as error:
+            details.append({"key": "outbox", "status": "error", "error": str(error)[:300]})
         try:
             mailbox_detail = await mailbox_check_activity()
             if mailbox_detail:

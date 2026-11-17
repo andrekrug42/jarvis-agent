@@ -106,9 +106,9 @@ deploy_workflow_deployment(
 #   SIGNAL_API_URL ← signal_api_url, SIGNAL_PHONE_NUMBER ← signal_phone_number,
 #   SIGNAL_USERNAME ← signal_username, SIGNAL_PASSWORD ← signal_password,
 #   JARVIS_AGENT_API_KEY ← jarvis_agent_api_key, JARVIS_ALLOWED_CHATS ← jarvis_allowed_chats
-# Dasselbe gilt für die Agent-Deployment jarvis (damit das Tool send_signal_message proaktiv
-# Nachrichten senden darf): SIGNAL_API_URL/PHONE_NUMBER/USERNAME/PASSWORD ← signal_* und
-#   JARVIS_ALLOWED_CHATS ← jarvis_allowed_chats, JARVIS_AGENT_API_KEY ← jarvis_agent_api_key
+# An der Agent-Deployment jarvis nur: JARVIS_AGENT_API_KEY ← jarvis_agent_api_key
+# (proaktives Signal-Senden läuft über die Outbox im State – die Bridge hat die SIGNAL_*-Secrets
+# und ist die einzige Stelle, die mit der Signal-API spricht)
 # dann Deployment neu starten (stop/start), damit die Env-Variablen injiziert werden
 ```
 
@@ -130,6 +130,14 @@ schedule: { input: {}, intervals: [{ every: "PT15S" }], policy: { overlap: 2 } }
   - In Vibe mit verbundenem Mistral-MCP: `list_workflows` zeigt `jarvis` (Agent) und `jarvis-signal-bridge`;
     mit `execute_workflow` lässt sich der Bridge-Workflow manuell einmal auslösen (Test).
 - **Sessions/Traces** prüfen: [console.mistral.ai → Managed Agents → Sessions](https://console.mistral.ai/build/managed-agents/sessions)
+
+## Proaktiv per Signal nachrichten (Outbox)
+
+„Schreib Melina, dass …“ / „Sag der Gruppe, dass …“: Der Agent legt die Nachricht per Tool
+`send_signal_message(target, message)` in die **Outbox** im State-Dokument (`outbox`). Die Bridge liest
+sie bei jedem Lauf (alle 5 s), löst das Ziel per `resolve_target` auf, prüft die Allowlist und sendet per
+`/v2/send`; bei Fehler/nicht erlaubtem Ziel meldet sie es per DM an den Account-Inhaber. Nur die Bridge
+braucht dafür die `SIGNAL_*`-Secrets.
 
 ## Zeitgesteuerte Aufgaben
 
@@ -166,7 +174,7 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `SIGNAL_AUTH_HEADER` | nein | Header-Name für den Key, Standard `Authorization` |
 | `SIGNAL_AUTH_PREFIX` | nein | Präfix des Header-Werts, Standard `Bearer ` |
 | `SIGNAL_ALLOWED_SOURCES` | nein | kommaseparierte UUIDs/Nummern, die JARVIS beantworten darf; leer = alle |
-| `JARVIS_ALLOWED_CHATS` | nein | **Allowlist (Sicherheit)**: kommaseparierte Chats, die JARVIS beantwortet bzw. proaktiv anschreiben darf – `dm:<uuid|nummer>`, `group:<id|name>`, oder Namen (`Andre,Melina,…,group:Die Kruhsohs`; Namen werden per `/v1/contacts` + `/v1/groups` aufgelöst). Leer = alle Chats erlaubt. Als Workspace-Secret `jarvis_allowed_chats` an Bridge **und** Agent-Deployment (`jarvis`) binden; Änderungen greifen nach Redeploy. Nicht erlaubte Chats bekommen keine Antwort, keinen Schreib-Indikator, keine Lesebestätigung und keine proaktiven Nachrichten |
+| `JARVIS_ALLOWED_CHATS` | nein | **Allowlist (Sicherheit)**: kommaseparierte Chats, die JARVIS beantwortet bzw. proaktiv anschreiben darf – `dm:<uuid|nummer>`, `group:<id|name>`, oder Namen (`Andre,Melina,…,group:Die Kruhsohs`; Namen werden per `/v1/contacts` + `/v1/groups` aufgelöst). Leer = alle Chats erlaubt. Als Workspace-Secret `jarvis_allowed_chats` an die Bridge binden; Änderungen greifen nach Redeploy. Nicht erlaubte Chats bekommen keine Antwort, keinen Schreib-Indikator, keine Lesebestätigung und keine proaktiven Nachrichten (Outbox/Tasks) |
 | `JARVIS_AGENT_NAME` | nein | Name des Agenten, Standard `jarvis` |
 | `JARVIS_AGENT_API_KEY` | ja (Bridge) | User-API-Key für `Agent.load_from`/`start_session` (Sessions nur als User möglich); Fallback: Service-Account-Token des Deployments |
 | `JARVIS_OWNER_NAME` | nein | Name des Account-Inhabers für den Kontext |

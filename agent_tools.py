@@ -492,37 +492,35 @@ async def send_signal_message(target: str, message: str) -> str:
 
     `target`: Vorname/Kontaktname (z. B. "Anna"), '+Nummer', UUID, oder 'gruppe' / Gruppenname (z. B. "Die Kruhsohs").
     `message`: Nachrichtentext auf Deutsch.
-    Sendet NUR an Chats aus der Allowlist (JARVIS_ALLOWED_CHATS); bei nicht erlaubtem Ziel wird ein Fehler
-    zurückgegeben und nichts gesendet. Benötigt die SIGNAL_*-Umgebungsvariablen in der Deployment.
+    Die Nachricht wird in die Outbox gelegt; die Bridge löst das Ziel auf, prüft die Allowlist
+    (JARVIS_ALLOWED_CHATS) und sendet per Signal. Bei nicht erlaubtem Ziel wird NICHTS gesendet und der
+    Account-Inhaber per DM informiert.
     """
-    import signal_client
     import state_store
+    from datetime import datetime, timezone
 
-    try:
-        recipients, chat_key, label = await signal_client.resolve_target(target)
-    except Exception as exc:
-        msg = str(exc)
-        if "SIGNAL_API_URL" in msg or "SIGNAL_PHONE_NUMBER" in msg:
-            raise agents.ToolError(
-                "Signal-API nicht konfiguriert: An der Agent-Deployment 'jarvis' fehlen die Secrets "
-                "signal_api_url/signal_phone_number/signal_username/signal_password (-> SIGNAL_*) und "
-                "jarvis_allowed_chats (-> JARVIS_ALLOWED_CHATS). Originalfehler: " + msg
-            )
-        raise agents.ToolError(f"Ziel nicht auflösbar/erlaubt: {msg}")
-    await signal_client.send(recipients, message)
-    try:
-        from datetime import datetime, timezone
-
-        state = await state_store.load()
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        state.setdefault("log", []).append(
-            {"ts": now, "chat": label, "sender": "JARVIS (proaktiv)", "summary": message[:240]}
-        )
-        state["log"] = state["log"][-200:]
-        await state_store.save(state)
-    except Exception:
-        pass
-    return f"Erledigt ✅ Nachricht an {label} gesendet."
+    now = datetime.now(timezone.utc)
+    state = await state_store.load()
+    outbox = state.setdefault("outbox", [])
+    open_count = sum(1 for o in outbox if o.get("status") in ("pending", "sending"))
+    if open_count >= 50:
+        raise agents.ToolError("zu viele offene Sende-Aufträge (max. 50)")
+    entry = {
+        "id": f"msg-{int(now.timestamp() * 1000)}",
+        "target": target.strip(),
+        "message": message.strip()[:4000],
+        "status": "pending",
+        "created": now.timestamp(),
+    }
+    outbox.append(entry)
+    state["outbox"] = [
+        o
+        for o in outbox
+        if o.get("status") in ("pending", "sending")
+        or now.timestamp() - float(o.get("finished", now.timestamp())) < 7 * 86400
+    ][-100:]
+    await state_store.save(state)
+    return f"In die Outbox gelegt ✅ – die Bridge sendet „{message.strip()[:80]}“ in wenigen Sekunden an „{target.strip()}“ (Allowlist wird geprüft)."
 
 
 @agents.tool
