@@ -20,8 +20,8 @@ MAILBOX_PROMPT = (
     "unbekannte Absender nur vermerken, nicht beantworten. Bearbeitete Mails als gelesen markieren. "
     "Beginne deine Antwort IMMER mit einer eigenen ersten Zeile im exakten Format \"MAILS: <Anzahl>\" "
     "(Anzahl der gefundenen unbearbeiteten Mails, z. B. \"MAILS: 0\"). "
-    "Danach eine kurze Zusammenfassung (pro Mail: Absender, Betreff, Aktion). "
-    "Nur bei MAILS > 0 schickt die Bridge eine Benachrichtigung als Signal-DM an Andre."
+    "Danach eine kurze, natürliche Nachricht an Andre im Signal-Stil (pro Mail 1–2 Sätze: wer, worum geht's, was wurde gemacht). "
+    "Nur bei MAILS > 0 schickt die Bridge diese Nachricht als Signal-DM an Andre."
 )
 
 _agent_registered = False
@@ -49,6 +49,12 @@ def _parse_mail_count(preview: str) -> int | None:
 
     match = re.search(r"MAILS:\s*(\d+)", preview)
     return int(match.group(1)) if match else None
+
+
+def _strip_mail_marker(preview: str) -> str:
+    import re
+
+    return re.sub(r"^MAILS:\s*\d+\s*[-–—:]?\s*", "", preview, count=1).strip()
 
 
 async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
@@ -455,7 +461,7 @@ async def _mailbox_check() -> dict[str, Any] | None:
     mail_count = _parse_mail_count(preview)
     if owner and preview and mail_count != 0:
         try:
-            await signal_client.send([owner], f"📬 Posteingang geprüft:\n{preview}")
+            await signal_client.send([owner], f"📬 {_strip_mail_marker(preview)}")
         except Exception:
             pass
     return detail
