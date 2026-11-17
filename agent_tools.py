@@ -10,10 +10,29 @@ MAX_DOCUMENT_CHARS = 120_000
 SEARCH_MODEL = os.environ.get("JARVIS_SEARCH_MODEL", "mistral-large-4")
 LIBRARY_NAME_PREFIXES = ("Dokumente zu ",)
 LIBRARY_EXTRA_NAMES = {"Allgemeine Dokumente", "Sonstiges"}
+# Feste IDs der Familien-Libraries (ueber die Workspace-Freigabe als Viewer nutzbar).
+# Der SA-Token der Deployment darf die Libraries-List-API nicht aufrufen (401 "User id is required"),
+# deshalb wird die Liste nicht per API aufgelöst.
+DEFAULT_LIBRARY_IDS = [
+    "019ffb25-68fa-7444-b829-ff7d4a456b9a",  # Dokumente zu Andre
+    "019ffb25-44c9-715d-a5c6-ef6929e9ec55",  # Dokumente zu Anna
+    "019ffb25-0f55-736c-b9c3-6d1b637ec09d",  # Dokumente zu Melina
+    "019ffb24-b3a0-77be-aa31-cfd6f554ccc6",  # Dokumente zu Magda
+    "019fd1b4-919e-73bf-8d53-e619b3762d22",  # Dokumente zu Jano
+    "019ffb25-9d04-77af-bad2-02413a95b442",  # Allgemeine Dokumente
+    "019ffb25-c58a-7324-978c-48ea8cfa5d0a",  # Sonstiges
+]
 _library_ids_cache: list[str] | None = None
 
 
 def _mistral_client():
+    # User-Key bevorzugen, wenn gebunden: der SA-Token der Deployment hat keine User-ID
+    # und Libraries-/Session-APIs verweigern ihm den Zugriff (401 "User id is required").
+    api_key = os.environ.get("JARVIS_AGENT_API_KEY")
+    if api_key:
+        from mistralai.client import Mistral
+
+        return Mistral(api_key=api_key)
     from mistralai.workflows.client import get_mistral_client
     from mistralai.workflows.core.auth import RunAs
 
@@ -256,15 +275,17 @@ def _resolve_library_ids() -> list[str]:
     if env_ids:
         _library_ids_cache = [part.strip() for part in env_ids.split(",") if part.strip()]
         return _library_ids_cache
-    client = _mistral_client()
-    response = _libraries(client).list(page_size=100)
-    ids = []
-    for item in getattr(response, "data", None) or []:
-        name = getattr(item, "name", "") or ""
-        if name.startswith(LIBRARY_NAME_PREFIXES) or name in LIBRARY_EXTRA_NAMES:
-            ids.append(item.id)
-    _library_ids_cache = ids
-    return ids
+    _library_ids_cache = list(DEFAULT_LIBRARY_IDS)
+    if not _library_ids_cache:
+        client = _mistral_client()
+        response = _libraries(client).list(page_size=100)
+        ids = []
+        for item in getattr(response, "data", None) or []:
+            name = getattr(item, "name", "") or ""
+            if name.startswith(LIBRARY_NAME_PREFIXES) or name in LIBRARY_EXTRA_NAMES:
+                ids.append(item.id)
+        _library_ids_cache = ids
+    return _library_ids_cache
 
 
 @agents.tool
