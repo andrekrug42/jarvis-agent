@@ -348,6 +348,9 @@ async def resolve_target(target: str) -> tuple[list[str], str, str]:
     lowered = target.lower()
     if not target:
         raise ValueError("leeres Ziel")
+    if target.startswith("dm:"):
+        target = target[3:].strip()
+        lowered = target.lower()
     if target.startswith("+") or ("-" in target and len(target) == 36):
         is_uuid = "-" in target
         if not allowlist.allows(

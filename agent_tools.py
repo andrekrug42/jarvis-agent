@@ -516,3 +516,52 @@ async def send_signal_message(target: str, message: str) -> str:
     except Exception:
         pass
     return f"Erledigt ✅ Nachricht an {label} gesendet."
+
+
+@agents.tool
+async def schedule_task(when_iso: str, action: str, target: str = "") -> str:
+    """Legt eine zeitgesteuerte Aufgabe an. Die Bridge führt sie zum Zeitpunkt automatisch aus
+    (z. B. Erinnerung, Posteingang prüfen, E-Mail schreiben) und schickt das Ergebnis per Signal
+    in den Ziel-Chat.
+
+    `when_iso`: Zeitpunkt als ISO-8601 mit Zeitzone, z. B. "2026-11-20T18:00:00+01:00" (Europe/Berlin).
+    `action`: klarer, vollständiger Auftrag auf Deutsch, z. B. "Erinnere daran, die Wäsche aufzuhängen".
+    `target`: Chat-Key aus dem KONTEXT-Block (Standardziel: derselbe Chat) oder Name/Gruppe des Empfängers.
+    """
+    import state_store
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    try:
+        due = datetime.fromisoformat(when_iso.strip())
+    except Exception:
+        raise agents.ToolError(f"when_iso ist kein gültiges ISO-8601-Datum: {when_iso!r}")
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=ZoneInfo("Europe/Berlin"))
+    now = datetime.now(timezone.utc)
+    due_ts = due.timestamp()
+    if due_ts < now.timestamp() + 30:
+        raise agents.ToolError("Zeitpunkt liegt in der Vergangenheit (mindestens +30 Sekunden ab jetzt)")
+    task = {
+        "id": f"task-{int(now.timestamp() * 1000)}",
+        "due": due_ts,
+        "due_iso": due.isoformat(),
+        "action": action.strip()[:2000],
+        "target": target.strip(),
+        "status": "pending",
+        "created": now.timestamp(),
+    }
+    state = await state_store.load()
+    tasks = state.setdefault("tasks", [])
+    open_count = sum(1 for t in tasks if t.get("status") in ("pending", "running"))
+    if open_count >= 100:
+        raise agents.ToolError("zu viele offene Aufgaben (max. 100) – alte erledigen lassen oder aufräumen")
+    tasks.append(task)
+    state["tasks"] = [
+        t for t in tasks if t.get("status") in ("pending", "running") or now.timestamp() - float(t.get("finished", now.timestamp())) < 7 * 86400
+    ][-200:]
+    await state_store.save(state)
+    return (
+        f"Aufgabe angelegt ✅ {due.strftime('%d.%m.%Y um %H:%M')} ({due.tzinfo}) – „{action.strip()[:120]}“"
+        f" (Ziel: {target.strip() or 'aktueller Chat'})"
+    )

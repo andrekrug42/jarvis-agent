@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timezone
 from datetime import timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
@@ -120,6 +121,12 @@ def build_envelope(
     if owner:
         lines.append(f"Account-Inhaber: {owner}")
     lines.append(f"Chat: {message['chat_label']}")
+    lines.append(f"Chat-Key: {message['chat_key']}")
+    now_utc = datetime.now(timezone.utc)
+    berlin = now_utc.astimezone(ZoneInfo("Europe/Berlin"))
+    lines.append(
+        f"Aktuelle Zeit: {berlin.strftime('%Y-%m-%d %H:%M')} Europe/Berlin ({now_utc.strftime('%Y-%m-%d %H:%M')} UTC)"
+    )
     lines.append(
         f"Absender dieser Nachricht: {message['sender_name']} "
         f"(Nummer: {message['sender_number'] or '–'}, UUID: {message['sender_uuid'] or '–'})"
@@ -473,6 +480,101 @@ async def mailbox_check_activity() -> dict[str, Any] | None:
     return await _mailbox_check()
 
 
+TASKS_MAX_PER_RUN = 3
+TASK_RUNNING_STALE_SECONDS = 1800
+
+
+async def _run_due_tasks() -> list[dict[str, Any]]:
+    import time
+
+    import signal_client
+    import state_store
+
+    now = time.time()
+    state = await state_store.load()
+    due_tasks = []
+    for task in state.get("tasks", []):
+        if float(task.get("due", 0)) > now:
+            continue
+        if task.get("status") == "pending":
+            due_tasks.append(task)
+        elif task.get("status") == "running" and now - float(task.get("started", 0)) > TASK_RUNNING_STALE_SECONDS:
+            task["status"] = "pending"
+            due_tasks.append(task)
+    due_tasks.sort(key=lambda t: float(t.get("due", 0)))
+    results: list[dict[str, Any]] = []
+    for task in due_tasks[:TASKS_MAX_PER_RUN]:
+        result: dict[str, Any] = {
+            "key": f"task:{task.get('id')}",
+            "status": "error",
+            "chat": task.get("target", ""),
+            "task_action": (task.get("action") or "")[:120],
+        }
+        task["status"] = "running"
+        task["started"] = now
+        try:
+            await state_store.save(state)
+        except Exception:
+            pass
+        try:
+            target = (task.get("target") or "").strip()
+            if not target:
+                raise ValueError("kein Ziel (target) in der Aufgabe hinterlegt")
+            recipients, chat_key, label = await signal_client.resolve_target(target)
+            message = {
+                "key": f"task:{task.get('id')}",
+                "timestamp": 0,
+                "chat_key": chat_key,
+                "chat_label": label,
+                "sender_uuid": "",
+                "sender_number": "",
+                "sender_name": "System (zeitgesteuerte Aufgabe)",
+                "text": (
+                    f"[AUFGABE {task.get('due_iso') or ''}] Führe jetzt diese zeitgesteuerte Aufgabe aus: "
+                    f"{task.get('action')}\n"
+                    "Führe sie direkt aus (bei Mails an Familien-Adressen direkt send_email; bei einer Erinnerung "
+                    "formuliere eine kurze, freundliche Nachricht). Antworte mit dem Ergebnis — es wird automatisch "
+                    "in den Ziel-Chat geschickt."
+                ),
+                "attachments": [],
+                "recipients": recipients,
+                "receipt_recipients": [],
+            }
+            detail = await _process_message(message)
+            task["status"] = "done" if detail.get("status") == "ok" else "error"
+            task["finished"] = now
+            task["result_preview"] = (detail.get("reply_preview") or "")[:300]
+            result.update(
+                {
+                    "status": "ok" if task["status"] == "done" else "error",
+                    "chat": chat_key,
+                    "reply_preview": (detail.get("reply_preview") or "")[:200],
+                }
+            )
+        except Exception as error:
+            task["status"] = "error"
+            task["finished"] = now
+            task["error"] = str(error)[:300]
+            result["error"] = str(error)[:200]
+        results.append(result)
+    if results:
+        state["tasks"] = [
+            t
+            for t in state.get("tasks", [])
+            if t.get("status") in ("pending", "running") or now - float(t.get("finished", now)) < 7 * 86400
+        ][-200:]
+        try:
+            await state_store.save(state)
+        except Exception:
+            pass
+    return results
+
+
+@workflows.activity(start_to_close_timeout=timedelta(minutes=25), retry_policy_max_attempts=2)
+async def tasks_check_activity() -> list[dict[str, Any]]:
+    return await _run_due_tasks()
+
+
 @workflows.workflow.define(
     name="jarvis-signal-bridge",
     workflow_display_name="JARVIS Signal Bridge",
@@ -498,5 +600,10 @@ class SignalBridgeWorkflow:
                 details.append(mailbox_detail)
         except Exception as error:
             details.append({"key": "mailbox", "status": "error", "error": str(error)[:300]})
+        try:
+            for task_result in await tasks_check_activity():
+                details.append(task_result)
+        except Exception as error:
+            details.append({"key": "tasks", "status": "error", "error": str(error)[:300]})
         processed = sum(1 for detail in details if detail.get("status") == "ok")
         return BridgeOutput(received=len(messages), processed=processed, details=details)

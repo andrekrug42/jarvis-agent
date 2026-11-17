@@ -10,6 +10,7 @@ from agent_tools import (
     read_person_info,
     save_mail_attachment,
     save_person_info,
+    schedule_task,
     search_knowledge,
     send_signal_message,
     web_search,
@@ -45,6 +46,7 @@ REGELN:
 - Du erinnerst dich an das gesamte bisherige Gespräch im jeweiligen Chat (deine Session). Beziehe dich darauf, wenn es passt ("wie vorhin besprochen ...").
 - Übergreifendes Gedächtnis: Wenn das Kurzprotokoll zeigt, dass etwas in einem anderen Chat besprochen wurde (z. B. eine Frage oder ein Plan einer anderen Person), darfst du das im passenden Chat wieder aufgreifen – du weißt, was du mit wem besprochen hast. Sei dabei taktvoll und nicht aufdringlich.
 - Proaktiv nachrichten: Ergibt sich im Gespräch, dass jemand anderes in der Familie oder die Gruppe informiert werden soll (z. B. „sag Anna, dass das Abendessen um 18 Uhr ist“ oder „schreib der Gruppe, dass wir später kommen“), nutze das Tool send_signal_message(target, message) — target ist Vorname/Kontaktname, +Nummer, UUID oder „gruppe“/Gruppenname. Das Tool sendet nur an erlaubte Chats (Allowlist) und meldet sonst einen Fehler; nie an externe oder unbekannte Empfänger senden. Bestätige im aktuellen Chat kurz, wem du geschrieben hast.
+- Zeitgesteuerte Aufgaben: Wenn jemand eine zeitgesteuerte Aktion will („erinnere mich morgen um 8 Uhr daran, …“, „prüfe Dienstag um 9 Uhr den Posteingang“, „schreibe Freitag um 12 Uhr eine E-Mail an …“), lege sie mit dem Tool schedule_task(when_iso, action, target) an. `when_iso`: ISO-8601 mit Zeitzone Europe/Berlin, berechnet aus der Angabe und der aktuellen Zeit im KONTEXT. `action`: klarer, vollständiger Auftrag auf Deutsch. `target`: normalerweise der Chat-Key aus dem KONTEXT-Block (damit das Ergebnis in denselben Chat geliefert wird); wenn ein anderer Empfänger gemeint ist (Name/Gruppe), diesen angeben. Bestätige kurz mit Datum/Uhrzeit. Beginnt eine Nachricht mit „[AUFGABE …]“, führst du die Aufgabe direkt aus und antwortest mit dem Ergebnis (bei Mails an Familien-Adressen direkt send_email; Kalendereinträge nur wenn die Aufgabe es ausdrücklich verlangt).
 - Anhänge: Bilder und Dokumente stehen im KONTEXT-Block mit file_id. Nutze das Tool describe_image für Bilder/Fotos/Screenshots und read_document für PDFs und andere Dokumente. Fasse prägnant zusammen oder beantworte die Frage dazu.
 - Sprachnachrichten erscheinen als Transkript im KONTEXT-Block – antworte auf den transkribierten Inhalt, als hätte die Person den Text geschrieben.
 - Bilder generieren: Wenn jemand ein Bild, eine Grafik oder eine Visualisierung möchte, nutze das Tool generate_image. Das fertige Bild wird automatisch als Anhang an den Chat zurückgeschickt.
@@ -75,6 +77,6 @@ agent = agents.Agent(
         "sowie, was mit den einzelnen Personen besprochen wurde."
     ),
     instructions=INSTRUCTIONS,
-    tools=[describe_image, read_document, web_search, generate_image, search_knowledge, save_person_info, read_person_info, save_mail_attachment, file_attachment_to_library, send_signal_message],
+    tools=[describe_image, read_document, web_search, generate_image, search_knowledge, save_person_info, read_person_info, save_mail_attachment, file_attachment_to_library, send_signal_message, schedule_task],
     connectors=[_gmail_connector(), _calendar_connector()],
 )

@@ -131,6 +131,14 @@ schedule: { input: {}, intervals: [{ every: "PT15S" }], policy: { overlap: 2 } }
     mit `execute_workflow` lässt sich der Bridge-Workflow manuell einmal auslösen (Test).
 - **Sessions/Traces** prüfen: [console.mistral.ai → Managed Agents → Sessions](https://console.mistral.ai/build/managed-agents/sessions)
 
+## Zeitgesteuerte Aufgaben
+
+„Erinnere mich morgen um 8 Uhr daran, …“ / „Prüfe Dienstag um 9 Uhr …“ / „Schreibe Freitag eine E-Mail an …“:
+Der Agent legt die Aufgabe per Tool `schedule_task(when_iso, action, target)` im Bridge-State ab
+(`tasks` im State-Dokument). Die Bridge prüft bei jedem Lauf (alle 5 s), ob Aufgaben fällig sind, führt sie
+über die jeweilige Chat-Session des Ziel-Chats aus (`[AUFGABE …]`-Prompt) und schickt das Ergebnis automatisch
+per Signal an den Ziel-Chat. Das Ziel wird dabei strikt gegen die Allowlist geprüft (`resolve_target`).
+
 ## Weitere Tools ergänzen
 
 Ein Tool ist eine Python-Funktion mit `@agents.tool` (typisierte Parameter + Docstring) in
