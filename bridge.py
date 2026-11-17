@@ -240,7 +240,10 @@ async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
             detail = await client.get_agent_by_name(agent_name)
         build_sha = getattr(detail, "build_commit_sha", None)
         if build_sha:
-            if chat_state.get("agent_build") and chat_state["agent_build"] != build_sha:
+            stale = chat_state.get("agent_build") != build_sha and (
+                chat_state.get("agent_build") or chat_state.get("session_key")
+            )
+            if stale:
                 chat_state["session_epoch"] = int(chat_state.get("session_epoch", 0)) + 1
                 chat_state["session_key"] = f"signal-chat:{message['chat_key']}:e{chat_state['session_epoch']}"
             chat_state["agent_build"] = build_sha
