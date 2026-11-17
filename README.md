@@ -155,6 +155,7 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `SIGNAL_AUTH_HEADER` | nein | Header-Name für den Key, Standard `Authorization` |
 | `SIGNAL_AUTH_PREFIX` | nein | Präfix des Header-Werts, Standard `Bearer ` |
 | `SIGNAL_ALLOWED_SOURCES` | nein | kommaseparierte UUIDs/Nummern, die JARVIS beantworten darf; leer = alle |
+| `JARVIS_ALLOWED_CHATS` | nein | **Allowlist (Sicherheit)**: kommaseparierte Chats, die JARVIS beantwortet – `dm:<uuid|nummer>`, `group:<id|name>`, oder Namen (`Andre,Melina,…,group:Familie Krug`; Namen werden per `/v1/contacts` + `/v1/groups` aufgelöst). Leer = alle Chats erlaubt. Als Workspace-Secret (z. B. `jarvis_allowed_chats`) an die Bridge binden; Änderungen greifen nach Redeploy. Nicht erlaubte Chats bekommen keine Antwort, keinen Schreib-Indikator und keine Lesebestätigung |
 | `JARVIS_AGENT_NAME` | nein | Name des Agenten, Standard `jarvis` |
 | `JARVIS_AGENT_API_KEY` | ja (Bridge) | User-API-Key für `Agent.load_from`/`start_session` (Sessions nur als User möglich); Fallback: Service-Account-Token des Deployments |
 | `JARVIS_OWNER_NAME` | nein | Name des Account-Inhabers für den Kontext |

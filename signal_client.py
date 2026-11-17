@@ -1,12 +1,120 @@
 import base64
+import logging
 import os
+import time
 from urllib.parse import quote
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 RECEIVE_TIMEOUT_SECONDS = 30
+ALLOWLIST_TTL_SECONDS = 300
 
 _effective_base: str | None = None
+_allowlist_cache: "_Allowlist | None" = None
+_allowlist_fetched_at: float = 0.0
+_allowlist_warned = False
+
+
+class _Allowlist:
+    """Erlaubte Chats aus JARVIS_ALLOWED_CHATS (dm:<uuid|nummer>, group:<id|name>, uuid, +nummer oder Personen-/Gruppenname)."""
+
+    def __init__(self, allow_all: bool, dm_ids: set[str], group_ids: set[str], group_names: set[str]):
+        self.allow_all = allow_all
+        self.dm_ids = dm_ids
+        self.group_ids = group_ids
+        self.group_names = group_names
+
+    def allows(self, *, sender_uuid: str, sender_number: str, group_id: str, group_name: str) -> bool:
+        if self.allow_all:
+            return True
+        if group_id:
+            return group_id in self.group_ids or (bool(group_name) and group_name.lower() in self.group_names)
+        return (bool(sender_uuid) and sender_uuid in self.dm_ids) or (
+            bool(sender_number) and sender_number in self.dm_ids
+        )
+
+
+def _allowlist_entries() -> list[str]:
+    raw = os.environ.get("JARVIS_ALLOWED_CHATS", "").strip()
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+async def _list_json(path: str, base: str, headers: dict[str, str], what: str) -> list[dict]:
+    try:
+        response = await _request("GET", path, base, headers, 30)
+        data = response.json()
+        return data if isinstance(data, list) else []
+    except Exception as error:
+        logger.warning("Allowlist: %s konnten nicht geladen werden (%s) – Namen werden nicht aufgeloest", what, str(error)[:200])
+        return []
+
+
+async def _build_allowlist() -> _Allowlist:
+    global _allowlist_cache, _allowlist_fetched_at, _allowlist_warned
+    now = time.monotonic()
+    if _allowlist_cache is not None and now - _allowlist_fetched_at < ALLOWLIST_TTL_SECONDS:
+        return _allowlist_cache
+    entries = _allowlist_entries()
+    if not entries:
+        if not _allowlist_warned:
+            logger.warning("JARVIS_ALLOWED_CHATS ist nicht gesetzt – Allowlist deaktiviert, ALLE Chats erlaubt")
+            _allowlist_warned = True
+        allowlist = _Allowlist(True, set(), set(), set())
+    else:
+        base, number, headers = _config()
+        contacts = await _list_json(f"/v1/contacts/{number}", base, headers, "Kontakte")
+        groups = await _list_json(f"/v1/groups/{number}", base, headers, "Gruppen")
+        dm_ids: set[str] = set()
+        group_ids: set[str] = set()
+        group_names: set[str] = set()
+        unresolved: list[str] = []
+        for entry in entries:
+            lowered = entry.lower()
+            if entry.startswith("dm:"):
+                dm_ids.add(entry[3:].strip())
+                continue
+            if entry.startswith("group:"):
+                rest = entry[6:].strip()
+                group_ids.add(rest)
+                group_names.add(rest.lower())
+                continue
+            dm_ids.add(entry)
+            matched = False
+            for contact in contacts:
+                names = {
+                    str(contact.get(field) or "").strip().lower()
+                    for field in ("name", "given_name", "profile_name", "number", "username")
+                }
+                if lowered in names:
+                    matched = True
+                    if contact.get("uuid"):
+                        dm_ids.add(str(contact["uuid"]))
+                    if contact.get("number"):
+                        dm_ids.add(str(contact["number"]))
+            for group in groups:
+                group_name = str(group.get("name") or "").strip().lower()
+                if group_name and group_name == lowered:
+                    matched = True
+                    for field in ("id", "internal_id"):
+                        if group.get(field):
+                            group_ids.add(str(group[field]))
+                    group_names.add(group_name)
+            if not matched and not entry.startswith("+") and not ("-" in entry and len(entry) == 36):
+                unresolved.append(entry)
+        if unresolved:
+            logger.warning("Allowlist: Eintraege ohne passenden Kontakt/Gruppe: %s", ", ".join(unresolved))
+        logger.info(
+            "Allowlist aktiv: %d DM-IDs, %d Gruppen-IDs, Gruppennamen=%s",
+            len(dm_ids), len(group_ids), sorted(group_names),
+        )
+        allowlist = _Allowlist(False, dm_ids, group_ids, group_names)
+    _allowlist_cache = allowlist
+    _allowlist_fetched_at = now
+    return allowlist
 
 
 def _b64decode(value: str) -> str:
@@ -83,8 +191,8 @@ def _is_own_message(env: dict, own_number: str) -> bool:
     return bool(source_number) and source_number == own_number
 
 
-def normalize(entry: dict) -> dict | None:
-    """Formt einen receive-Envelope in ein flaches Nachrichten-Dict um (v1: nackter Envelope, v2: {"envelope": ...}). None = ignorieren (z. B. Receipts, eigene Nachrichten)."""
+def normalize(entry: dict, allowlist: _Allowlist | None = None) -> dict | None:
+    """Formt einen receive-Envelope in ein flaches Nachrichten-Dict um (v1: nackter Envelope, v2: {"envelope": ...}). None = ignorieren (z. B. Receipts, eigene Nachrichten, nicht erlaubte Chats)."""
     env = entry.get("envelope") or entry
     dm = env.get("dataMessage")
     if not dm:
@@ -99,8 +207,12 @@ def normalize(entry: dict) -> dict | None:
     if allowed is not None and source_uuid not in allowed and source_number not in allowed:
         return None
     group_info = dm.get("groupInfo") or {}
-    group_id = group_info.get("groupId")
+    group_id = group_info.get("groupId") or ""
     group_name = group_info.get("name") or ""
+    if allowlist is not None and not allowlist.allows(
+        sender_uuid=source_uuid, sender_number=source_number, group_id=group_id, group_name=group_name
+    ):
+        return None
     if group_id:
         # Empfangene groupId ist die interne ID (base64 der rohen 32 Bytes, einfach kodiert).
         # Senden/Typing/Receipts erwarten "group." + base64(internalId) (doppelt base64, siehe getRecipientType in signal-cli-rest-api).
@@ -143,17 +255,27 @@ def normalize(entry: dict) -> dict | None:
 
 
 async def receive() -> list[dict]:
-    """ Holt neue Nachrichten von der Signal-REST-API ab (v1/receive dequeued). """
+    """Holt neue Nachrichten von der Signal-REST-API ab (v1/receive dequeued).
+
+    Read-Receipts werden hier NICHT automatisch gesendet (send_read_receipts=false);
+    die Bridge quittiert nur Nachrichten aus erlaubten Chats einzeln (send_read_receipt).
+    """
     base, number, headers = _config()
+    allowlist = await _build_allowlist()
     response = await _request(
-        "GET", f"/v1/receive/{number}?send_read_receipts=true", base, headers, RECEIVE_TIMEOUT_SECONDS
+        "GET", f"/v1/receive/{number}?send_read_receipts=false", base, headers, RECEIVE_TIMEOUT_SECONDS
     )
     entries = response.json()
     messages = []
+    dropped = 0
     for entry in entries or []:
-        message = normalize(entry)
+        message = normalize(entry, allowlist)
         if message:
             messages.append(message)
+        elif (entry.get("envelope") or entry).get("dataMessage"):
+            dropped += 1
+    if dropped:
+        logger.info("receive: %d Nachricht(en) verworfen (Chat nicht in JARVIS_ALLOWED_CHATS)", dropped)
     return messages
 
 
