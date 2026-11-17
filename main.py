@@ -6,9 +6,10 @@ from agent_tools import describe_image, generate_image, read_document, search_kn
 
 
 def _gmail_connector():
-    # Unattended (Schedule) Sessions: Connector als Deployment-Identität, Credential im Workspace-Scope.
+    # Default run_as ("auto"): Connector läuft als Session-User (der Account-Inhaber, Sessions werden
+    # mit dessen API-Key gestartet) und nutzt dessen Gmail-Verbindung. Erfordert gehärtetes Deployment.
     credentials_name = os.environ.get("JARVIS_GMAIL_CREDENTIALS_NAME", "").strip() or None
-    return agents.connector("gmail", run_as="deployment", credentials_name=credentials_name)
+    return agents.connector("gmail", credentials_name=credentials_name)
 
 
 INSTRUCTIONS = """Du bist JARVIS, der persönliche KI-Assistent des Account-Inhabers und seiner Familie – benannt nach dem Assistenten aus den Iron-Man-Filmen, aber bodenständig, hilfsbereit und prägnant.

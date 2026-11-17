@@ -15,7 +15,11 @@ _agent_registered = False
 
 
 async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
-    """Registriert den Agenten einmalig beim Control Plane (idempotentes Upsert) und gibt den Queue-/Deployment-Namen zurück, an den er gebunden ist."""
+    """Registriert den Agenten einmalig beim Control Plane (idempotentes Upsert) und gibt den Queue-/Deployment-Namen zurück, an den er gebunden ist.
+
+    Versucht zuerst den User-Key und fällt auf den Service-Account-Token zurück
+    (bei gehärtetem Deployment ist der Runtime-SA gepinnt, der User-Key ggf. nicht).
+    """
     global _agent_registered
     if _agent_registered:
         return agent_name
@@ -23,10 +27,25 @@ async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
 
     base_url = os.environ.get("AGENTS_SDK_DEPLOY_CONTROL_PLANE_URL", "https://api.mistral.ai/v2/agents").rstrip("/")
     preferred = os.environ.get("JARVIS_DEPLOYMENT_NAME", "").strip() or agent_name
-    async with AgentsClient(base_url=base_url, api_key=user_api_key, timeout_seconds=60) as client:
-        response = await client.register_agent(agent_name=agent_name, workflow_name=agent_name, deployment_name=preferred)
-    _agent_registered = True
-    return response.deployment_name
+    keys: list[str] = []
+    if user_api_key:
+        keys.append(user_api_key)
+    token_path = os.environ.get("MISTRAL_SA_TOKEN_PATH", "")
+    if token_path and os.path.exists(token_path):
+        with open(token_path, encoding="utf-8") as handle:
+            sa_token = handle.read().strip()
+        if sa_token:
+            keys.append(sa_token)
+    errors: list[str] = []
+    for key in keys:
+        try:
+            async with AgentsClient(base_url=base_url, api_key=key, timeout_seconds=60) as client:
+                response = await client.register_agent(agent_name=agent_name, workflow_name=agent_name, deployment_name=preferred)
+            _agent_registered = True
+            return response.deployment_name
+        except Exception as error:
+            errors.append(f"{type(error).__name__}: {str(error)[:200]}")
+    raise RuntimeError("register_agent fehlgeschlagen (" + " | ".join(errors) + ")")
 
 
 class BridgeInput(BaseModel):
