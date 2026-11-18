@@ -23,7 +23,7 @@ jobs:
         run: uv sync --frozen --group dev
       - name: Byte-compile all modules
         run: uv run python -m py_compile main.py bridge.py bridge_worker.py agent_tools.py state_store.py signal_client.py
-      - name: Ruff (volle Regeln: E, F, W, I, UP, B)
+      - name: Ruff volle Regeln (E, F, W, I, UP, B)
         run: uv run ruff check .
       - name: Ruff format check
         run: uv run ruff format --check .
