@@ -178,6 +178,10 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `JARVIS_AGENT_NAME` | nein | Name des Agenten, Standard `jarvis` |
 | `JARVIS_AGENT_API_KEY` | ja (Bridge) | User-API-Key für `Agent.load_from`/`start_session` (Sessions nur als User möglich); Fallback: Service-Account-Token des Deployments |
 | `JARVIS_OWNER_NAME` | nein | Name des Account-Inhabers für den Kontext |
+| `JARVIS_MAILBOX_INTERVAL_SECONDS` | nein | Intervall des autonomen Postfach-Checks in Sekunden, Standard `3600` (1× pro Stunde) |
+| `JARVIS_MAILBOX_MAX_MESSAGES` | nein | max. unbearbeitete Mails pro Postfach-Check, Standard `10` |
+| `JARVIS_SEARCH_MODEL` | nein | Modell für web_search/generate_image/search_knowledge, Standard `mistral-large-4` |
+| `JARVIS_AUDIO_MODEL` | nein | Modell für Sprachnachrichten-Transkription, Standard `voxtral-mini-latest` |
 
 ## Hinweise
 
@@ -189,3 +193,6 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
   Deployments, gesetzt im Dockerfile). Danach startet die Bridge automatisch eine neue Session;
   das Chat-Protokoll bleibt im Bridge-Log erhalten.
 - Antworten können durch das 15-s-Polling bis zu ~15 s dauern.
+- Detaillierte Verhaltensregeln (E-Mail/Postfach/Kalender, inkl. Postfach-Check mit Snippet-first)
+  liegen im Library-Dokument `JARVIS-Verhaltensregeln.md` (Library „Allgemeine Dokumente`) –
+  der Agent liest sie per `search_knowledge` bei Bedarf; die Instruktionen in `main.py` halten nur die Kurzfassung.

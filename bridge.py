@@ -11,19 +11,17 @@ import mistralai.workflows as workflows
 LOG_LIMIT = 200
 PROCESSED_LIMIT = 500
 LOG_CONTEXT_ENTRIES = 30
-DEFAULT_MAILBOX_INTERVAL_SECONDS = 300
+DEFAULT_MAILBOX_INTERVAL_SECONDS = 3600
 DEFAULT_MAILBOX_MAX_MESSAGES = 10
 DEFAULT_OWNER_UUID = "ac4f2a1b-fd6f-4ca7-8014-80486abc623d"
 MAILBOX_PROMPT = (
-    "[POSTFACH-CHECK] Prüfe jetzt den Posteingang des JARVIS-Gmail-Kontos gemäß deinen Mail-Regeln "
-    "(siehe Instruktionen): ungelesene Mails (in:inbox is:unread, ohne Promotions/Social/Updates/Forums), "
-    "maximal {max_messages}. Beantworte nur Mails von Familien-Absendern (Kontaktdaten) automatisch; "
-    "unbekannte Absender nur vermerken, nicht beantworten. Bearbeitete Mails als gelesen markieren. "
-    "Anhänge nur bei Familien-Absendern laden/auswerten und in die passende Library ablegen; bei unbekannten nur Dateiname/Typ vermerken. "
+    "[POSTFACH-CHECK] Pr\u00fcfe jetzt den Posteingang des JARVIS-Gmail-Kontos. "
+    "Lies zuerst das Regeln-Dokument \u201eJARVIS-Verhaltensregeln.md\" (Library \u201eAllgemeine Dokumente\") mit search_knowledge "
+    "(Gmail-Query, Snippet-first, Familien-Auto-Replies, unbekannte Absender, Anh\u00e4nge). "
+    "Unbearbeitete Mails im Pr\u00fcf-Scope: maximal {max_messages}. "
     "Beginne deine Antwort IMMER mit einer eigenen ersten Zeile im exakten Format \"MAILS: <Anzahl>\" "
-    "(Anzahl der gefundenen unbearbeiteten Mails, z. B. \"MAILS: 0\"). "
-    "Danach eine kurze, natürliche Nachricht an Andre im Signal-Stil (pro Mail 1–2 Sätze: wer, worum geht's, was wurde gemacht). "
-    "Nur bei MAILS > 0 schickt die Bridge diese Nachricht als Signal-DM an Andre."
+    "(z. B. \"MAILS: 0\"). Nur bei MAILS > 0 schickt die Bridge die folgende Nachricht als Signal-DM an Andre; "
+    "danach eine kurze, nat\u00fcrliche Nachricht im Signal-Stil (pro Mail 1\u20132 S\u00e4tze: wer, worum geht's, was wurde gemacht)."
 )
 
 _agent_registered = False
