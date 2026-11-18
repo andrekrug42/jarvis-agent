@@ -206,3 +206,49 @@ def test_resolve_target_by_name_spaced_contact_number(monkeypatch):
     recipients, _chat_key, label = asyncio.run(signal_client.resolve_target("Melina"))
     assert recipients == ["uuid-melina"]
     assert "Melina" in label
+
+
+def test_build_allowlist_number_entry_resolves_uuid_and_owner_added(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("JARVIS_ALLOWED_CHATS", "+4915228777924,group:Die Kruhsohs")
+    monkeypatch.setenv("JARVIS_OWNER_UUID", "uuid-owner")
+    monkeypatch.setattr(signal_client, "_allowlist_cache", None)
+    monkeypatch.setattr(signal_client, "_allowlist_fetched_at", 0.0)
+
+    async def fake_list(path, base, headers, what):
+        if "contacts" in path:
+            # API liefert die Nummer mit Leerzeichen
+            return [{"uuid": "uuid-melina", "number": "+49 152 28777924", "name": "Melina K"}]
+        return [{"id": "gid-1", "name": "Die Kruhsohs"}]
+
+    monkeypatch.setattr(signal_client, "_list_json", fake_list)
+    al = asyncio.run(signal_client._build_allowlist())
+    # Nummer-Eintrag loest trotz Leerzeichen die UUID auf
+    assert "uuid-melina" in al.dm_ids
+    # Owner-UUID und eigene Nummer sind immer erlaubt
+    assert "uuid-owner" in al.dm_ids
+    assert signal_client._norm_phone("+4900000000000") in al.dm_ids
+    assert al.allows(sender_uuid="uuid-melina", sender_number="", group_id="", group_name="")
+    assert al.allows(sender_uuid="", sender_number="+49 152 28777924", group_id="", group_name="")
+
+
+def test_resolve_target_no_match_lists_contacts(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("JARVIS_ALLOWED_CHATS", "+4915228777924")
+    al = signal_client._Allowlist(False, {"+4915228777924", "uuid-melina"}, set(), set())
+    monkeypatch.setattr(signal_client, "_allowlist_cache", al)
+    monkeypatch.setattr(signal_client, "_allowlist_fetched_at", 999999999.0)
+
+    async def fake_list(path, base, headers, what):
+        if "contacts" in path:
+            return [{"uuid": "uuid-melina", "number": "+4915228777924", "name": "Melina K"}]
+        return []
+
+    monkeypatch.setattr(signal_client, "_list_json", fake_list)
+    try:
+        asyncio.run(signal_client.resolve_target("Unbekannt"))
+        raise AssertionError("sollte ValueError werfen")
+    except ValueError as error:
+        assert "Melina K" in str(error) and "+4915228777924" in str(error)

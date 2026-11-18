@@ -164,9 +164,15 @@ async def _build_allowlist() -> _Allowlist:
             dm_ids.add(_norm_phone(entry))
             matched = False
             for contact in contacts:
+                contact_number = _norm_phone(str(contact.get("number") or ""))
+                # Nummer exakt (normalisiert) vergleichen - sonst matcht '+49 176 ...' nie '+49176...'
+                if contact_number and contact_number == _norm_phone(entry):
+                    matched = True
+                    if contact.get("uuid"):
+                        dm_ids.add(str(contact["uuid"]))
+                    dm_ids.add(contact_number)
                 if any(
-                    _name_matches(str(contact.get(field) or ""), lowered)
-                    for field in ("name", "given_name", "profile_name", "number", "username")
+                    _name_matches(str(contact.get(field) or ""), lowered) for field in ("name", "given_name", "profile_name", "username")
                 ):
                     matched = True
                     if contact.get("uuid"):
@@ -185,6 +191,12 @@ async def _build_allowlist() -> _Allowlist:
                 unresolved.append(entry)
         if unresolved:
             logger.warning("Allowlist: Eintraege ohne passenden Kontakt/Gruppe: %s", ", ".join(unresolved))
+        # Owner (JARVIS_OWNER_UUID) und die eigene Nummer sind immer erlaubt
+        owner_uuid = os.environ.get("JARVIS_OWNER_UUID", "").strip()
+        if owner_uuid:
+            dm_ids.add(owner_uuid)
+        if number:
+            dm_ids.add(_norm_phone(number))
         logger.info(
             "Allowlist aktiv: %d DM-IDs, %d Gruppen-IDs, Gruppennamen=%s",
             len(dm_ids),
@@ -469,4 +481,8 @@ async def resolve_target(target: str) -> tuple[list[str], str, str]:
         ginternal = str(group.get("internal_id") or "").lower()
         if lowered and (lowered in (gid, ginternal) or _name_matches(gname, lowered)):
             return _group_target(group, allowlist)
-    raise ValueError(f"kein Kontakt oder Gruppe namens '{target}' gefunden")
+    available = ", ".join(
+        f"{str(c.get('name') or c.get('given_name') or c.get('profile_name') or '?')} ({_norm_phone(str(c.get('number') or '')) or c.get('uuid') or '?'})"
+        for c in contacts[:15]
+    )
+    raise ValueError(f"kein Kontakt oder Gruppe namens '{target}' gefunden. Verfuegbare Kontakte: {available}")
