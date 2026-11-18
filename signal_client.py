@@ -153,6 +153,13 @@ async def _build_allowlist() -> _Allowlist:
                 rest = entry[6:].strip()
                 group_ids.add(rest)
                 group_names.add(rest.lower())
+                # Gruppenname zusaetzlich ueber /v1/groups auf id/internal_id aufloesen
+                for group in groups:
+                    gname = str(group.get("name") or "").strip().lower()
+                    if gname and _name_matches(gname, rest.lower()):
+                        for field in ("id", "internal_id"):
+                            if group.get(field):
+                                group_ids.add(str(group[field]))
                 continue
             dm_ids.add(_norm_phone(entry))
             matched = False
