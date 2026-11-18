@@ -12,7 +12,7 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
                                      ┌──────────────────────────────┐
                                      │ Managed Deployment "jarvis"  │
                                      │  Workflow "jarvis-signal-    │
-                                     │  bridge" (Schedule: 15 s)    │
+                                     │  bridge" (Schedule: PT5S)   │
                                      │   poll → pro Chat eine Agent- │
                                      │   Session → Antwort via       │
                                      │   POST /v2/send               │
@@ -27,7 +27,7 @@ Signal-App ──► signal-cli-rest-api ──GET /v1/receive──┐
 ![Architektur](docs/architecture.svg)
 
 - **Agent `jarvis`** (`main.py`): Modell `mistral-large-4`, Persona und Regeln in den Instructions.
-- **Bridge-Workflow `jarvis-signal-bridge`** (`bridge.py`): wird alle 15 s per Schedule ausgeführt,
+- **Bridge-Workflow `jarvis-signal-bridge`** (`bridge.py`): wird alle 5 s per Schedule (`PT5S`) ausgeführt,
   pollt `GET /v1/receive/{number}`, verarbeitet jede neue Nachricht und antwortet über `POST /v2/send`.
   Dabei: Schreib-Indikator an beim Verarbeiten (`PUT /v1/typing-indicator/{number}`), aus nach der
   Antwort (`DELETE`), und „gelesen“-Receipt nach der Antwort (`POST /v1/receipts/{number}`, receipt_type=read).
@@ -112,12 +112,12 @@ deploy_workflow_deployment(
 # dann Deployment neu starten (stop/start), damit die Env-Variablen injiziert werden
 ```
 
-Danach den Bridge-Workflow **schedulen** (alle 15 s):
+Danach den Bridge-Workflow **schedulen** (alle 5 s, `PT5S`):
 
 ```
 workflow_identifier: jarvis-signal-bridge
 deployment_name: jarvis-bridge
-schedule: { input: {}, intervals: [{ every: "PT15S" }], policy: { overlap: 2 } }
+schedule: { input: {}, intervals: [{ every: "PT5S" }], policy: { overlap: 2 } }
 ```
 
 ## Mit JARVIS sprechen
@@ -212,7 +212,11 @@ Auto-Fix/Format lokal: `uv run ruff check --fix .` und `uv run ruff format .`
 - Sessions enden spätestens nach 24 h idle bzw. 1 Woche gesamt (Maximum bei verwalteten
   Deployments, gesetzt im Dockerfile). Danach startet die Bridge automatisch eine neue Session;
   das Chat-Protokoll bleibt im Bridge-Log erhalten.
-- Antworten können durch das 15-s-Polling bis zu ~15 s dauern.
+- Antworten können durch das 5-s-Polling (Schedule `PT5S`) plus Verarbeitungszeit bis zu ~10–15 s dauern.
+  Latenz-Optimierung: Der State wird pro Run nur noch einmal geladen und an alle Activities durchgereicht
+  (statt 3–4× pro Run), der GitHub-HEAD-Check für die Session-Epoche ist 60 s gecacht, die Antwort wird
+  direkt per `/v2/send` geschickt (Outbox nur noch für proaktive Nachrichten), und Outbox/Tasks-Checks
+  werden übersprungen, wenn nichts ansteht.
 - Detaillierte Verhaltensregeln (E-Mail/Postfach/Kalender, inkl. Postfach-Check mit Snippet-first)
   liegen im Library-Dokument `JARVIS-Verhaltensregeln.md` (Library „Allgemeine Dokumente`) –
   der Agent liest sie per `search_knowledge` bei Bedarf; die Instruktionen in `main.py` halten nur die Kurzfassung.

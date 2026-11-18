@@ -10,6 +10,7 @@ LOG_LIMIT = 200
 PROCESSED_LIMIT = 500
 LOG_CONTEXT_ENTRIES = 30
 DEFAULT_MAILBOX_INTERVAL_SECONDS = 3600
+BUILD_SHA_TTL_SECONDS = 60
 DEFAULT_MAILBOX_MAX_MESSAGES = 10
 MAILBOX_PROMPT = (
     "[POSTFACH-CHECK] Pr\u00fcfe jetzt den Posteingang des JARVIS-Gmail-Kontos. "
@@ -22,6 +23,8 @@ MAILBOX_PROMPT = (
 )
 
 _agent_registered = False
+_build_sha_cache: str | None = None
+_build_sha_fetched_at: float = 0.0
 
 
 def _owner_dm_recipient() -> str | None:
@@ -123,6 +126,34 @@ async def ensure_agent_registered(agent_name: str, user_api_key: str) -> str:
         except Exception as error:
             errors.append(f"{type(error).__name__}: {str(error)[:200]}")
     raise RuntimeError("register_agent fehlgeschlagen (" + " | ".join(errors) + ")")
+
+
+async def _current_build_sha() -> str | None:
+    """HEAD-Sha des Agent-Repos von GitHub, mit kurzem In-Memory-Cache (TTL BUILD_SHA_TTL_SECONDS).
+
+    Spart pro Nachricht einen HTTP-Call (und bei langsamem GitHub den 15-s-Stall). Bei Fehler
+    wird der zuletzt bekannte Cache-Wert zurueckgegeben (sonst None).
+    """
+    global _build_sha_cache, _build_sha_fetched_at
+    import time
+
+    now = time.time()
+    if _build_sha_cache is not None and now - _build_sha_fetched_at < BUILD_SHA_TTL_SECONDS:
+        return _build_sha_cache
+    try:
+        import httpx
+
+        repo = os.environ.get("JARVIS_AGENT_REPO", "andrekrug42/jarvis-agent")
+        branch = os.environ.get("JARVIS_AGENT_BRANCH", "main")
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.get(f"https://api.github.com/repos/{repo}/commits/{branch}")
+        sha = resp.json().get("sha") if resp.status_code == 200 else None
+    except Exception:
+        return _build_sha_cache
+    if sha:
+        _build_sha_cache = sha
+        _build_sha_fetched_at = now
+    return sha
 
 
 class BridgeInput(BaseModel):
@@ -244,7 +275,7 @@ async def poll_signal_activity() -> list[dict[str, Any]]:
     return await signal_client.receive()
 
 
-async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
+async def _process_message(message: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     global _agent_registered
 
     from mistralai import agents
@@ -267,9 +298,8 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
             client = agents.Client()
         agent = agents.Agent.load_from(agent_name=agent_name, client=client)
 
-    state = await state_store.load()
     if message["key"] in state.get("processed", []):
-        return {"key": message["key"], "status": "already_processed"}
+        return {"key": message["key"], "status": "already_processed"}, state
 
     try:
         await signal_client.send_typing(message["recipients"], stop=False)
@@ -319,13 +349,7 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
     # neue Session-Epoche (Connectoren werden beim Session-Start aufgelöst — eine alte Session sieht
     # neu hinzugefügte Connectoren nicht).
     try:
-        import httpx
-
-        repo = os.environ.get("JARVIS_AGENT_REPO", "andrekrug42/jarvis-agent")
-        branch = os.environ.get("JARVIS_AGENT_BRANCH", "main")
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.get(f"https://api.github.com/repos/{repo}/commits/{branch}")
-        build_sha = resp.json().get("sha") if resp.status_code == 200 else None
+        build_sha = await _current_build_sha()
         if build_sha:
             stale = chat_state.get("agent_build") != build_sha and (chat_state.get("agent_build") or chat_state.get("session_key"))
             if stale:
@@ -460,26 +484,33 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
         "reply_preview": _truncate(reply_text, 600),
         "images": len(attachments_out),
         "filed": len(filed_notes),
-    }
+    }, state
+
+
+@workflows.activity(start_to_close_timeout=timedelta(seconds=60), retry_policy_max_attempts=2)
+async def load_state_activity() -> dict[str, Any]:
+    import state_store
+
+    return await state_store.load()
 
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=20), retry_policy_max_attempts=2)
-async def process_message_activity(message: dict[str, Any]) -> dict[str, Any]:
-    return await _process_message(message)
+async def process_message_activity(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    detail, new_state = await _process_message(message, state)
+    return {"state": new_state, "result": detail}
 
 
-async def _mailbox_check() -> dict[str, Any] | None:
+async def _mailbox_check(state: dict[str, Any]) -> dict[str, Any]:
     import time
 
     import signal_client
     import state_store
 
     interval, max_messages = _mailbox_settings()
-    state = await state_store.load()
     now = time.time()
     last_check = float(state.get("mailbox_last_check", 0) or 0)
     if now - last_check < interval:
-        return None
+        return {"state": state, "result": None}
     mailbox_message = {
         "key": f"mailbox:{int(now)}",
         "timestamp": int(now * 1000),
@@ -493,8 +524,7 @@ async def _mailbox_check() -> dict[str, Any] | None:
         "recipients": [],
         "receipt_recipients": [],
     }
-    detail = await _process_message(mailbox_message)
-    state = await state_store.load()
+    detail, state = await _process_message(mailbox_message, state)
     state["mailbox_last_check"] = now
     try:
         await state_store.save(state)
@@ -508,26 +538,25 @@ async def _mailbox_check() -> dict[str, Any] | None:
             await signal_client.send([owner], f"📬 {_strip_mail_marker(preview)}")
         except Exception:
             pass
-    return detail
+    return {"state": state, "result": detail}
 
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=25), retry_policy_max_attempts=2)
-async def mailbox_check_activity() -> dict[str, Any] | None:
-    return await _mailbox_check()
+async def mailbox_check_activity(state: dict[str, Any]) -> dict[str, Any]:
+    return await _mailbox_check(state)
 
 
 TASKS_MAX_PER_RUN = 3
 TASK_RUNNING_STALE_SECONDS = 1800
 
 
-async def _run_due_tasks() -> list[dict[str, Any]]:
+async def _run_due_tasks(state: dict[str, Any]) -> dict[str, Any]:
     import time
 
     import signal_client
     import state_store
 
     now = time.time()
-    state = await state_store.load()
     due_tasks = []
     for task in state.get("tasks", []):
         if float(task.get("due", 0)) > now:
@@ -576,7 +605,7 @@ async def _run_due_tasks() -> list[dict[str, Any]]:
                 "recipients": recipients,
                 "receipt_recipients": [],
             }
-            detail = await _process_message(message)
+            detail, state = await _process_message(message, state)
             task["status"] = "done" if detail.get("status") == "ok" else "error"
             task["finished"] = now
             task["result_preview"] = (detail.get("reply_preview") or "")[:300]
@@ -613,26 +642,25 @@ async def _run_due_tasks() -> list[dict[str, Any]]:
             await state_store.save(state)
         except Exception:
             pass
-    return results
+    return {"state": state, "result": results}
 
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=25), retry_policy_max_attempts=2)
-async def tasks_check_activity() -> list[dict[str, Any]]:
-    return await _run_due_tasks()
+async def tasks_check_activity(state: dict[str, Any]) -> dict[str, Any]:
+    return await _run_due_tasks(state)
 
 
 OUTBOX_MAX_PER_RUN = 10
 OUTBOX_SENDING_STALE_SECONDS = 600
 
 
-async def _drain_outbox() -> list[dict[str, Any]]:
+async def _drain_outbox(state: dict[str, Any]) -> dict[str, Any]:
     import time
 
     import signal_client
     import state_store
 
     now = time.time()
-    state = await state_store.load()
     pending = []
     for entry in state.get("outbox", []):
         if entry.get("status") == "pending":
@@ -694,12 +722,12 @@ async def _drain_outbox() -> list[dict[str, Any]]:
             await state_store.save(state)
         except Exception:
             pass
-    return results
+    return {"state": state, "result": results}
 
 
 @workflows.activity(start_to_close_timeout=timedelta(minutes=5), retry_policy_max_attempts=2)
-async def outbox_check_activity() -> list[dict[str, Any]]:
-    return await _drain_outbox()
+async def outbox_check_activity(state: dict[str, Any]) -> dict[str, Any]:
+    return await _drain_outbox(state)
 
 
 @workflows.workflow.define(
@@ -715,27 +743,41 @@ class SignalBridgeWorkflow:
     async def run(self, input: BridgeInput) -> BridgeOutput:
         messages = await poll_signal_activity()
         messages = messages[: input.max_messages]
+        # State wird EINMAL pro Run geladen und an die Activities durchgereicht ( jede Activity
+        # hat frueher selbst geladen -> 3 HTTP-Calls pro Activity gespart). Jede Activity gibt
+        # {"state": ..., "result": ...} zurueck, damit der naechste Schritt den frischen Stand sieht.
+        try:
+            state = await load_state_activity()
+        except Exception:
+            state = {"chats": {}, "log": [], "processed": []}
         details: list[dict[str, Any]] = []
         for message in messages:
             try:
-                details.append(await process_message_activity(message))
+                out = await process_message_activity(message, state)
+                state = out.get("state") or state
+                details.append(out.get("result") or {"key": message.get("key"), "status": "error"})
             except Exception as error:
                 details.append({"key": message.get("key"), "status": "error", "error": str(error)[:300]})
+        if state.get("outbox"):
+            try:
+                out = await outbox_check_activity(state)
+                state = out.get("state") or state
+                details.extend(out.get("result") or [])
+            except Exception as error:
+                details.append({"key": "outbox", "status": "error", "error": str(error)[:300]})
         try:
-            for outbox_result in await outbox_check_activity():
-                details.append(outbox_result)
-        except Exception as error:
-            details.append({"key": "outbox", "status": "error", "error": str(error)[:300]})
-        try:
-            mailbox_detail = await mailbox_check_activity()
-            if mailbox_detail:
-                details.append(mailbox_detail)
+            out = await mailbox_check_activity(state)
+            state = out.get("state") or state
+            if out.get("result"):
+                details.append(out["result"])
         except Exception as error:
             details.append({"key": "mailbox", "status": "error", "error": str(error)[:300]})
-        try:
-            for task_result in await tasks_check_activity():
-                details.append(task_result)
-        except Exception as error:
-            details.append({"key": "tasks", "status": "error", "error": str(error)[:300]})
+        if any(task.get("status") in ("pending", "running") for task in state.get("tasks", [])):
+            try:
+                out = await tasks_check_activity(state)
+                state = out.get("state") or state
+                details.extend(out.get("result") or [])
+            except Exception as error:
+                details.append({"key": "tasks", "status": "error", "error": str(error)[:300]})
         processed = sum(1 for detail in details if detail.get("status") == "ok")
         return BridgeOutput(received=len(messages), processed=processed, details=details)

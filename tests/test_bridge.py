@@ -127,3 +127,114 @@ def test_owner_dm_recipient_env_only(monkeypatch):
     assert bridge._owner_dm_recipient() is None  # kein Default mehr im Code
     monkeypatch.setenv("JARVIS_OWNER_UUID", "uuid-owner")
     assert bridge._owner_dm_recipient() == "uuid-owner"
+
+
+def _no_load(monkeypatch):
+    async def boom():
+        raise RuntimeError("state_store.load darf in diesem Pfad nicht mehr gerufen werden")
+
+    monkeypatch.setattr(state_store, "load", boom)
+
+
+def test_drain_outbox_uses_passed_state_empty(monkeypatch):
+    _no_load(monkeypatch)
+    state = {"outbox": [], "log": []}
+    out = asyncio.run(bridge._drain_outbox(state))
+    assert out["result"] == []
+    assert out["state"] is state
+
+
+def test_drain_outbox_sends_pending_without_load(monkeypatch):
+    import signal_client
+
+    _no_load(monkeypatch)
+    saved = []
+
+    async def fake_save(s):
+        saved.append(s)
+
+    monkeypatch.setattr(state_store, "save", fake_save)
+    sent = []
+
+    async def fake_send(recipients, message, attachments=None):
+        sent.append((recipients, message))
+        return {}
+
+    monkeypatch.setattr(signal_client, "send", fake_send)
+
+    async def fake_resolve(target):
+        return (["dm:x"], "dm:x", "X")
+
+    monkeypatch.setattr(signal_client, "resolve_target", fake_resolve)
+    state = {"outbox": [{"id": "o1", "status": "pending", "target": "Andre", "message": "hi"}], "log": []}
+    out = asyncio.run(bridge._drain_outbox(state))
+    assert out["result"][0]["status"] == "ok"
+    assert sent == [(["dm:x"], "hi")]
+    assert out["state"]["outbox"][0]["status"] == "done"
+    assert saved  # Status wurde persistiert
+
+
+def test_run_due_tasks_uses_passed_state_no_tasks(monkeypatch):
+    _no_load(monkeypatch)
+    out = asyncio.run(bridge._run_due_tasks({"tasks": [], "log": []}))
+    assert out["result"] == []
+
+
+def test_mailbox_check_not_due_uses_passed_state(monkeypatch):
+    import time
+
+    _no_load(monkeypatch)
+    out = asyncio.run(bridge._mailbox_check({"mailbox_last_check": time.time()}))
+    assert out["result"] is None
+
+
+def test_current_build_sha_caches_within_ttl(monkeypatch):
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"sha": "abc123"}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url):
+            calls.append(url)
+            return FakeResp()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr(bridge, "_build_sha_cache", None)
+    monkeypatch.setattr(bridge, "_build_sha_fetched_at", 0.0)
+    sha1 = asyncio.run(bridge._current_build_sha())
+    sha2 = asyncio.run(bridge._current_build_sha())
+    assert sha1 == sha2 == "abc123"
+    assert len(calls) == 1  # zweiter Aufruf kam aus dem Cache
+
+
+def test_current_build_sha_returns_last_known_on_error(monkeypatch):
+    class BoomClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url):
+            raise RuntimeError("github down")
+
+    monkeypatch.setattr("httpx.AsyncClient", BoomClient)
+    monkeypatch.setattr(bridge, "_build_sha_cache", "old-sha")
+    monkeypatch.setattr(bridge, "_build_sha_fetched_at", 0.0)
+    assert asyncio.run(bridge._current_build_sha()) == "old-sha"
