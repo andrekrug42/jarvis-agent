@@ -11,7 +11,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 COPY . .
-RUN uv sync --no-dev \
+RUN uv sync --frozen --no-dev \
  && useradd --create-home --shell /usr/sbin/nologin agent \
  && chown -R agent:agent /app
 

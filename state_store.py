@@ -1,8 +1,13 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
+
+logger = logging.getLogger(__name__)
+
+_last_good_state: dict | None = None
 
 LIBRARY_NAME = "jarvis-bridge-state"
 STATE_DOC_NAME = "jarvis-state.md"
@@ -59,14 +64,13 @@ def _ensure_library(client) -> str:
 
 
 def _parse_state(text: str) -> dict:
+    # WICHTIG: bei ungueltigem JSON wird geworfen (nicht silently default zurueckgeben) –
+    # sonst wuerde ein korruptes State-Dokument beim naechsten save komplett geleert.
     match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
     raw = match.group(1) if match else text
-    try:
-        state = json.loads(raw)
-    except Exception:
-        return _default_state()
+    state = json.loads(raw)
     if not isinstance(state, dict):
-        return _default_state()
+        raise ValueError("State-Dokument ist kein JSON-Objekt")
     state.setdefault("chats", {})
     state.setdefault("log", [])
     state.setdefault("processed", [])
@@ -74,21 +78,21 @@ def _parse_state(text: str) -> dict:
 
 
 def _load_sync() -> dict:
+    global _last_good_state
     client = _mistral_client()
-    try:
-        library_id = _find_library(client)
-        if not library_id:
-            return _default_state()
-        docs = _documents(client).list(
-            library_id=library_id, search=STATE_DOC_NAME, sort_by="created_at", sort_order="desc", page_size=100
-        )
-        for doc in docs.data or []:
-            if doc.name == STATE_DOC_NAME:
-                text = _documents(client).text_content(library_id=library_id, document_id=doc.id).text
-                return _parse_state(text)
+    library_id = _find_library(client)
+    if not library_id:
         return _default_state()
-    except Exception:
+    docs = _documents(client).list(
+        library_id=library_id, search=STATE_DOC_NAME, sort_by="created_at", sort_order="desc", page_size=100
+    )
+    doc = next((d for d in (docs.data or []) if d.name == STATE_DOC_NAME), None)
+    if doc is None:
         return _default_state()
+    text = _documents(client).text_content(library_id=library_id, document_id=doc.id).text
+    state = _parse_state(text)
+    _last_good_state = state
+    return state
 
 
 def _save_sync(state: dict) -> None:
@@ -109,7 +113,18 @@ def _save_sync(state: dict) -> None:
 
 
 async def load() -> dict:
-    return await asyncio.to_thread(_load_sync)
+    global _last_good_state
+    try:
+        return await asyncio.to_thread(_load_sync)
+    except Exception as error:
+        if _last_good_state is not None:
+            logger.warning(
+                "State-Load fehlgeschlagen (%s: %s) – letzter guter In-Memory-Stand wird verwendet",
+                type(error).__name__,
+                str(error)[:200],
+            )
+            return _last_good_state
+        raise
 
 
 async def save(state: dict) -> None:

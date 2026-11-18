@@ -16,6 +16,13 @@ _allowlist_cache: "_Allowlist | None" = None
 _allowlist_fetched_at: float = 0.0
 _allowlist_warned = False
 
+DEFAULT_OWNER_UUID = "ac4f2a1b-fd6f-4ca7-8014-80486abc623d"
+
+
+def owner_dm_recipient() -> str | None:
+    """Signal-UUID des Account-Inhabers für Benachrichtigungen (nur 1:1 an ihn)."""
+    return os.environ.get("JARVIS_OWNER_UUID", "").strip() or DEFAULT_OWNER_UUID
+
 
 class _Allowlist:
     """Erlaubte Chats aus JARVIS_ALLOWED_CHATS (dm:<uuid|nummer>, group:<id|name>, uuid, +nummer oder Personen-/Gruppenname)."""
@@ -63,6 +70,30 @@ async def _list_json(path: str, base: str, headers: dict[str, str], what: str) -
         return []
 
 
+async def _notify_owner_allowlist_empty() -> None:
+    """Einmalige DM an den Account-Inhaber, wenn die Allowlist leer ist (fail-closed)."""
+    owner = owner_dm_recipient()
+    if not owner:
+        return
+    try:
+        base, number, headers = _config()
+        headers = {**headers, "Content-Type": "application/json"}
+        await _request(
+            "POST",
+            "/v2/send",
+            base,
+            headers,
+            30,
+            json={
+                "number": number,
+                "recipients": [owner],
+                "message": "⚠️ JARVIS_ALLOWED_CHATS ist leer – fail-closed aktiv: alle Chats werden blockiert, bis die Allowlist gesetzt ist.",
+            },
+        )
+    except Exception as error:
+        logger.warning("Owner-DM (Allowlist leer) fehlgeschlagen: %s", str(error)[:200])
+
+
 async def _build_allowlist() -> _Allowlist:
     global _allowlist_cache, _allowlist_fetched_at, _allowlist_warned
     now = time.monotonic()
@@ -70,10 +101,12 @@ async def _build_allowlist() -> _Allowlist:
         return _allowlist_cache
     entries = _allowlist_entries()
     if not entries:
+        # fail-closed: ohne Allowlist wird ALLES blockiert (nie fail-open), Owner wird per DM informiert
         if not _allowlist_warned:
-            logger.warning("JARVIS_ALLOWED_CHATS ist nicht gesetzt – Allowlist deaktiviert, ALLE Chats erlaubt")
+            logger.warning("JARVIS_ALLOWED_CHATS ist nicht gesetzt – fail-closed aktiv, ALLE Chats blockiert")
             _allowlist_warned = True
-        allowlist = _Allowlist(True, set(), set(), set())
+            await _notify_owner_allowlist_empty()
+        allowlist = _Allowlist(False, set(), set(), set())
     else:
         base, number, headers = _config()
         contacts = await _list_json(f"/v1/contacts/{number}", base, headers, "Kontakte")

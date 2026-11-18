@@ -13,7 +13,6 @@ PROCESSED_LIMIT = 500
 LOG_CONTEXT_ENTRIES = 30
 DEFAULT_MAILBOX_INTERVAL_SECONDS = 3600
 DEFAULT_MAILBOX_MAX_MESSAGES = 10
-DEFAULT_OWNER_UUID = "ac4f2a1b-fd6f-4ca7-8014-80486abc623d"
 MAILBOX_PROMPT = (
     "[POSTFACH-CHECK] Pr\u00fcfe jetzt den Posteingang des JARVIS-Gmail-Kontos. "
     "Lies zuerst das Regeln-Dokument \u201eJARVIS-Verhaltensregeln.md\" (Library \u201eAllgemeine Dokumente\") mit search_knowledge "
@@ -28,8 +27,10 @@ _agent_registered = False
 
 
 def _owner_dm_recipient() -> str | None:
-    """Signal-UUID des Account-Inhabers für Postfach-Benachrichtigungen (nur 1:1 an ihn)."""
-    return os.environ.get("JARVIS_OWNER_UUID", "").strip() or DEFAULT_OWNER_UUID
+    """Signal-UUID des Account-Inhabers für Benachrichtigungen (nur 1:1 an ihn)."""
+    import signal_client
+
+    return signal_client.owner_dm_recipient()
 
 
 def _mailbox_settings() -> tuple[int, int]:
@@ -209,6 +210,14 @@ def extract_file_ids(obj: Any, found: list[str] | None = None) -> list[str]:
     return found
 
 
+def _is_trusted_image_url(url: str) -> bool:
+    """Nur Mistral-Hosts duerfen serverseitig geladen werden (SSRF-Schutz)."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    return host == "mistral.ai" or host.endswith(".mistral.ai")
+
+
 def extract_image_urls(obj: Any, found: list[str] | None = None) -> list[str]:
     """Sammelt rekursiv alle image_url-Werte aus einem Turn-Record (z. B. Ergebnis des Tools generate_image)."""
     if found is None:
@@ -384,6 +393,8 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
     for url in extract_image_urls(record):
+        if not _is_trusted_image_url(url):
+            continue
         try:
             import httpx
 
@@ -497,7 +508,10 @@ async def _mailbox_check() -> dict[str, Any] | None:
     detail = await _process_message(mailbox_message)
     state = await state_store.load()
     state["mailbox_last_check"] = now
-    await state_store.save(state)
+    try:
+        await state_store.save(state)
+    except Exception:
+        pass
     owner = _owner_dm_recipient()
     preview = (detail.get("reply_preview") or "").strip()
     mail_count = _parse_mail_count(preview)
@@ -590,6 +604,15 @@ async def _run_due_tasks() -> list[dict[str, Any]]:
             task["finished"] = now
             task["error"] = str(error)[:300]
             result["error"] = str(error)[:200]
+            try:
+                owner = _owner_dm_recipient()
+                if owner:
+                    await signal_client.send(
+                        [owner],
+                        f"⚠️ Zeitgesteuerte Aufgabe fehlgeschlagen ({(task.get('action') or '')[:80]}): {str(error)[:150]}",
+                    )
+            except Exception:
+                pass
         results.append(result)
     if results:
         state["tasks"] = [

@@ -462,7 +462,6 @@ async def file_attachment_to_library(file_id: str, filename: str, person: str = 
     """
     import mimetypes
 
-    import state_store
 
     def _download() -> bytes:
         return _download_file(_mistral_client(), file_id)
@@ -502,7 +501,6 @@ async def send_signal_message(target: str, message: str) -> str:
     (JARVIS_ALLOWED_CHATS) und sendet per Signal. Bei nicht erlaubtem Ziel wird NICHTS gesendet und der
     Account-Inhaber per DM informiert.
     """
-    import state_store
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
@@ -540,7 +538,6 @@ async def schedule_task(when_iso: str, action: str, target: str = "") -> str:
     `action`: klarer, vollständiger Auftrag auf Deutsch, z. B. "Erinnere daran, die Wäsche aufzuhängen".
     `target`: Chat-Key aus dem KONTEXT-Block (Standardziel: derselbe Chat) oder Name/Gruppe des Empfängers.
     """
-    import state_store
     from datetime import datetime, timedelta, timezone
     from zoneinfo import ZoneInfo
 
