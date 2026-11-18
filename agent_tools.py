@@ -10,7 +10,10 @@ import state_store
 
 MAX_DOCUMENT_CHARS = 120_000
 
-SEARCH_MODEL = os.environ.get("JARVIS_SEARCH_MODEL", "mistral-large-4")
+SEARCH_MODEL = os.environ.get("JARVIS_SEARCH_MODEL", "mistral-medium-latest")
+IMAGE_MODEL = os.environ.get("JARVIS_IMAGE_MODEL", "mistral-large-4")
+VISION_MODEL = os.environ.get("JARVIS_VISION_MODEL", "mistral-large-4")
+TASK_PARSE_MODEL = os.environ.get("JARVIS_TASK_PARSE_MODEL", "mistral-small-latest")
 LIBRARY_NAME_PREFIXES = ("Dokumente zu ",)
 LIBRARY_EXTRA_NAMES = {"Allgemeine Dokumente", "Sonstiges"}
 # Feste IDs der Familien-Libraries (ueber die Workspace-Freigabe als Viewer nutzbar).
@@ -95,7 +98,7 @@ async def describe_image(file_id: str, question: str = "Beschreibe das Bild ausf
         data = _download_file(client, file_id)
         data_url = f"data:{_image_mime(data)};base64,{base64.b64encode(data).decode()}"
         response = client.chat.complete(
-            model="mistral-large-4",
+            model=VISION_MODEL,
             messages=[
                 {
                     "role": "user",
@@ -143,7 +146,7 @@ async def read_document(file_id: str, question: str = "") -> str:
         def _qa() -> str:
             client = _mistral_client()
             response = client.chat.complete(
-                model="mistral-large-4",
+                model=SEARCH_MODEL,
                 messages=[
                     {
                         "role": "system",
@@ -253,7 +256,7 @@ async def generate_image(prompt: str) -> dict:
     `prompt`: genaue Bildbeschreibung, z. B. "R futuristisches Smart-Home-Dashboard, dunkles Design".
     """
     def _run():
-        return _conversation_sync(SEARCH_MODEL, [{"type": "image_generation"}], prompt)
+        return _conversation_sync(IMAGE_MODEL, [{"type": "image_generation"}], prompt)
 
     response = await asyncio.to_thread(_as_tool_error(_run))
     for output in getattr(response, "outputs", None) or []:
@@ -568,7 +571,7 @@ async def schedule_task(when_iso: str, action: str, target: str = "") -> str:
             f"Zeitangabe: {text}"
         )
         response = client.chat.complete(
-            model="mistral-large-4", messages=[{"role": "user", "content": prompt}], temperature=0
+            model=TASK_PARSE_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0
         )
         content = response.choices[0].message.content
         raw_out = content if isinstance(content, str) else str(content)

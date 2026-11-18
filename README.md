@@ -180,7 +180,11 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `JARVIS_OWNER_NAME` | nein | Name des Account-Inhabers für den Kontext |
 | `JARVIS_MAILBOX_INTERVAL_SECONDS` | nein | Intervall des autonomen Postfach-Checks in Sekunden, Standard `3600` (1× pro Stunde) |
 | `JARVIS_MAILBOX_MAX_MESSAGES` | nein | max. unbearbeitete Mails pro Postfach-Check, Standard `10` |
-| `JARVIS_SEARCH_MODEL` | nein | Modell für web_search/generate_image/search_knowledge, Standard `mistral-large-4` |
+| `JARVIS_SEARCH_MODEL` | nein | Modell für web_search/search_knowledge/read_document-QA, Standard `mistral-medium-latest` |
+| `JARVIS_IMAGE_MODEL` | nein | Modell für generate_image, Standard `mistral-large-4` |
+| `JARVIS_VISION_MODEL` | nein | Modell für describe_image (Bildverstehen), Standard `mistral-large-4` |
+| `JARVIS_CLASSIFY_MODEL` | nein | Modell für Dokument-Klassifizierung (Auto-Ablegen), Standard `mistral-small-latest` |
+| `JARVIS_TASK_PARSE_MODEL` | nein | Modell für Zeitangaben-Parsing in schedule_task, Standard `mistral-small-latest` |
 | `JARVIS_AUDIO_MODEL` | nein | Modell für Sprachnachrichten-Transkription, Standard `voxtral-mini-latest` |
 
 ## Hinweise

@@ -9,6 +9,7 @@ STATE_DOC_NAME = "jarvis-state.md"
 FAMILY_LIBRARY_PREFIXES = ("Dokumente zu ",)
 FAMILY_LIBRARY_EXTRA_NAMES = {"Allgemeine Dokumente", "Sonstiges"}
 CLASSIFY_MAX_CHARS = 20_000
+CLASSIFY_MODEL = os.environ.get("JARVIS_CLASSIFY_MODEL", "mistral-small-latest")
 
 
 def _mistral_client():
@@ -206,7 +207,7 @@ def _classify_sync(filename: str, content_type: str, data: bytes, libraries: lis
         f"Auszug des Inhalts:\n{text or '(kein Text extrahierbar, nur Dateiname/Typ)'}"
     )
     response = client.chat.complete(
-        model="mistral-large-4",
+        model=CLASSIFY_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
     )
