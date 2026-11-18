@@ -109,3 +109,100 @@ def test_basic_token_roundtrip():
 def test_b64decode_passthrough_on_invalid():
     assert signal_client._b64decode("not-base64!!!") == "not-base64!!!"
     assert signal_client._b64decode(base64.b64encode(b"hi").decode()) == "hi"
+
+
+def test_norm_phone():
+    assert signal_client._norm_phone("+49 152 28777924") == "+4915228777924"
+    assert signal_client._norm_phone("+4915228777924") == "+4915228777924"
+    assert signal_client._norm_phone("ac4f2a1b-fd6f-4ca7-8014-80486abc623d") == "ac4f2a1b-fd6f-4ca7-8014-80486abc623d"
+    assert signal_client._norm_phone("Melina") == "Melina"
+    assert signal_client._norm_phone("") == ""
+
+
+def test_allowlist_entries_real_secret_format(monkeypatch):
+    monkeypatch.setenv(
+        "JARVIS_ALLOWED_CHATS",
+        "+4915228777924,+4917620979406,+491783358068,+491744916129,+4917663748538,group:Die Kruhsohs",
+    )
+    assert signal_client._allowlist_entries() == [
+        "+4915228777924",
+        "+4917620979406",
+        "+491783358068",
+        "+491744916129",
+        "+4917663748538",
+        "group:Die Kruhsohs",
+    ]
+
+
+def test_allowlist_entries_strip_quotes_and_spaces(monkeypatch):
+    monkeypatch.setenv("JARVIS_ALLOWED_CHATS", '" +4915228777924 , group:Die Kruhsohs "')
+    entries = signal_client._allowlist_entries()
+    assert "+4915228777924" in entries
+    assert "group:Die Kruhsohs" in entries
+    assert all('"' not in e and "'" not in e for e in entries)
+
+
+def test_allows_normalizes_spaced_number():
+    al = signal_client._Allowlist(False, {"+4915228777924"}, set(), set())
+    assert al.allows(sender_uuid="", sender_number="+49 152 28777924", group_id="", group_name="")
+    assert al.allows(sender_uuid="", sender_number="+4915228777924", group_id="", group_name="")
+    assert not al.allows(sender_uuid="", sender_number="+499999", group_id="", group_name="")
+
+
+def test_build_allowlist_matches_contact_number_with_spaces(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("JARVIS_ALLOWED_CHATS", "+4915228777924,group:Die Kruhsohs")
+    monkeypatch.setattr(signal_client, "_allowlist_cache", None)
+    monkeypatch.setattr(signal_client, "_allowlist_fetched_at", 0.0)
+
+    async def fake_list(path, base, headers, what):
+        if "contacts" in path:
+            return [{"uuid": "uuid-melina", "number": "+49 152 28777924", "name": "Melina"}]
+        return [{"id": "gid-1", "name": "Die Kruhsohs"}]
+
+    monkeypatch.setattr(signal_client, "_list_json", fake_list)
+    al = asyncio.run(signal_client._build_allowlist())
+    # Kontakt-Nummer mit Leerzeichen (so liefert es die API) matcht die Nummer ohne Leerzeichen im Secret
+    assert al.allows(sender_uuid="", sender_number="+49 152 28777924", group_id="", group_name="")
+    assert al.allows(sender_uuid="", sender_number="+4915228777924", group_id="", group_name="")
+    # UUID allein ist nicht in der Allowlist (nur die Nummer steht im Secret) - real matcht immer die Nummer mit
+    assert al.allows(sender_uuid="uuid-melina", sender_number="+49 152 28777924", group_id="", group_name="")
+    assert al.allows(sender_uuid="", sender_number="", group_id="gid-1", group_name="")
+    assert al.allows(sender_uuid="", sender_number="", group_id="irgendwas", group_name="Die Kruhsohs")
+
+
+def test_resolve_target_spaced_number_normalized_and_allowed(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("JARVIS_ALLOWED_CHATS", "+4915228777924")
+    al = signal_client._Allowlist(False, {"+4915228777924"}, set(), set())
+    monkeypatch.setattr(signal_client, "_allowlist_cache", al)
+    monkeypatch.setattr(signal_client, "_allowlist_fetched_at", 999999999.0)
+
+    async def fake_list(path, base, headers, what):
+        return []
+
+    monkeypatch.setattr(signal_client, "_list_json", fake_list)
+    recipients, chat_key, _label = asyncio.run(signal_client.resolve_target("+49 152 28777924"))
+    assert recipients == ["+4915228777924"]  # normalisiert, so erwartet es v2/send
+    assert chat_key == "dm:+4915228777924"
+
+
+def test_resolve_target_by_name_spaced_contact_number(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("JARVIS_ALLOWED_CHATS", "+4915228777924")
+    al = signal_client._Allowlist(False, {"+4915228777924", "uuid-melina"}, set(), set())
+    monkeypatch.setattr(signal_client, "_allowlist_cache", al)
+    monkeypatch.setattr(signal_client, "_allowlist_fetched_at", 999999999.0)
+
+    async def fake_list(path, base, headers, what):
+        if "contacts" in path:
+            return [{"uuid": "uuid-melina", "number": "+49 152 28777924", "name": "Melina"}]
+        return []
+
+    monkeypatch.setattr(signal_client, "_list_json", fake_list)
+    recipients, _chat_key, label = asyncio.run(signal_client.resolve_target("Melina"))
+    assert recipients == ["uuid-melina"]
+    assert "Melina" in label

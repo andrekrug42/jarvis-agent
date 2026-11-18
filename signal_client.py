@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+import re
 import time
 from urllib.parse import quote
 
@@ -45,14 +46,37 @@ class _Allowlist:
             return True
         if group_id:
             return group_id in self.group_ids or (bool(group_name) and group_name.lower() in self.group_names)
+        sender_number = _norm_phone(sender_number)
         return (bool(sender_uuid) and sender_uuid in self.dm_ids) or (bool(sender_number) and sender_number in self.dm_ids)
 
 
+def _norm_phone(value: str) -> str:
+    """Telefonnummern vergleichbar machen: Leerzeichen raus ('+49 151 ...' == '+49151...').
+
+    UUIDs und Namen bleiben unveraendert (nur Werte mit fuehrendem '+' werden normalisiert).
+    """
+    value = (value or "").strip()
+    if value.startswith("+"):
+        return re.sub(r"\s+", "", value)
+    return value
+
+
+def _clean_entry(value: str) -> str:
+    """Allowlist-Eintrag robust saeubern: aeussere Whitespace UND Anfuehrungszeichen raus
+    (Secret-Werte werden gern als '\"...\"' uebernommen), Telefonnummern ohne Leerzeichen."""
+    return _norm_phone(value.strip().strip("\"'").strip())
+
+
 def _allowlist_entries() -> list[str]:
-    raw = os.environ.get("JARVIS_ALLOWED_CHATS", "").strip()
+    raw = os.environ.get("JARVIS_ALLOWED_CHATS", "").strip().strip("\"'").strip()
     if not raw:
         return []
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    entries = []
+    for part in raw.split(","):
+        part = _clean_entry(part)
+        if part:
+            entries.append(part)
+    return entries
 
 
 def _name_matches(field: str, lowered: str) -> bool:
@@ -123,14 +147,14 @@ async def _build_allowlist() -> _Allowlist:
         for entry in entries:
             lowered = entry.lower()
             if entry.startswith("dm:"):
-                dm_ids.add(entry[3:].strip())
+                dm_ids.add(_norm_phone(entry[3:].strip()))
                 continue
             if entry.startswith("group:"):
                 rest = entry[6:].strip()
                 group_ids.add(rest)
                 group_names.add(rest.lower())
                 continue
-            dm_ids.add(entry)
+            dm_ids.add(_norm_phone(entry))
             matched = False
             for contact in contacts:
                 if any(
@@ -141,7 +165,7 @@ async def _build_allowlist() -> _Allowlist:
                     if contact.get("uuid"):
                         dm_ids.add(str(contact["uuid"]))
                     if contact.get("number"):
-                        dm_ids.add(str(contact["number"]))
+                        dm_ids.add(_norm_phone(str(contact["number"])))
             for group in groups:
                 group_name = str(group.get("name") or "").strip().lower()
                 if group_name and _name_matches(group_name, lowered):
@@ -230,15 +254,15 @@ async def _request(method: str, path: str, base: str, headers: dict[str, str], t
 
 
 def _allowed_sources() -> set[str] | None:
-    raw = os.environ.get("SIGNAL_ALLOWED_SOURCES", "").strip()
+    raw = os.environ.get("SIGNAL_ALLOWED_SOURCES", "").strip().strip("\"'").strip()
     if not raw:
         return None
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    return {_clean_entry(part) for part in raw.split(",") if part.strip()}
 
 
 def _is_own_message(env: dict, own_number: str) -> bool:
     source_number = env.get("sourceNumber") or env.get("source") or ""
-    return bool(source_number) and source_number == own_number
+    return bool(source_number) and _norm_phone(source_number) == _norm_phone(own_number)
 
 
 def normalize(entry: dict, allowlist: _Allowlist | None = None) -> dict | None:
@@ -251,7 +275,7 @@ def normalize(entry: dict, allowlist: _Allowlist | None = None) -> dict | None:
     if _is_own_message(env, own_number):
         return None
     source_uuid = env.get("sourceUuid") or env.get("source") or ""
-    source_number = env.get("sourceNumber") or env.get("source") or ""
+    source_number = _norm_phone(env.get("sourceNumber") or env.get("source") or "")
     source_name = env.get("sourceName") or ""
     allowed = _allowed_sources()
     if allowed is not None and source_uuid not in allowed and source_number not in allowed:
@@ -391,15 +415,16 @@ async def resolve_target(target: str) -> tuple[list[str], str, str]:
     """
     base, number, headers = _config()
     allowlist = await _build_allowlist()
-    target = (target or "").strip()
+    target = _clean_entry(target or "")
     lowered = target.lower()
     if not target:
         raise ValueError("leeres Ziel")
     if target.startswith("dm:"):
-        target = target[3:].strip()
+        target = _norm_phone(target[3:].strip())
         lowered = target.lower()
     if target.startswith("+") or ("-" in target and len(target) == 36):
         is_uuid = "-" in target
+        target = _norm_phone(target)
         if not allowlist.allows(
             sender_uuid=target if is_uuid else "",
             sender_number="" if is_uuid else target,
@@ -423,7 +448,7 @@ async def resolve_target(target: str) -> tuple[list[str], str, str]:
             _name_matches(str(contact.get(field) or ""), lowered) for field in ("name", "given_name", "profile_name", "number", "username")
         ):
             uuid = str(contact.get("uuid") or "")
-            contact_number = str(contact.get("number") or "")
+            contact_number = _norm_phone(str(contact.get("number") or ""))
             recipient = uuid or contact_number
             if not recipient:
                 raise ValueError(f"Kontakt '{target}' hat weder UUID noch Nummer")
