@@ -252,3 +252,84 @@ def test_resolve_target_no_match_lists_contacts(monkeypatch):
         raise AssertionError("sollte ValueError werfen")
     except ValueError as error:
         assert "Melina K" in str(error) and "+4915228777924" in str(error)
+
+
+def _cache_allowlist(monkeypatch, al):
+    monkeypatch.setattr(signal_client, "_allowlist_cache", al)
+    monkeypatch.setattr(signal_client, "_allowlist_fetched_at", 999999999.0)
+
+
+class _FakeResp:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def json(self):
+        return self._entries
+
+
+def _patch_request(monkeypatch, entries):
+    async def fake_request(method, path, base, headers, timeout, **kwargs):
+        return _FakeResp(entries)
+
+    monkeypatch.setattr(signal_client, "_request", fake_request)
+
+
+def test_receive_logs_raw_envelope_and_drop_details(monkeypatch, caplog):
+    import asyncio
+    import logging
+
+    al = signal_client._Allowlist(False, {"+4917620979406", "+4900000000000"}, set(), set())
+    _cache_allowlist(monkeypatch, al)
+    allowed = _dm_envelope(
+        sourceUuid="uuid-melina",
+        sourceNumber="+49 176 20979406",  # Leerzeichen -> normalisiert matcht Allowlist
+        sourceName="Melina",
+        dataMessage={"timestamp": 1700000000001, "message": "Hallo Jarvis, das ist geheim", "attachments": []},
+    )
+    fremd = _dm_envelope(
+        sourceUuid="uuid-fremd",
+        sourceNumber="+4999999",
+        sourceName="Unbekannt",
+        dataMessage={"timestamp": 1700000000002, "message": "Nicht erlaubt", "attachments": [{"id": "a1"}]},
+    )
+    _patch_request(monkeypatch, [allowed, fremd])
+    with caplog.at_level(logging.INFO, logger="signal_client"):
+        msgs = asyncio.run(signal_client.receive())
+    assert [m["sender_uuid"] for m in msgs] == ["uuid-melina"]
+    text = caplog.text
+    # Roh-Envelope VOR dem Filtern (receive-raw) – auch fuer die erlaubte Nachricht
+    assert "receive-raw" in text
+    assert "Hallo Jarvis, das ist geheim" in text
+    assert "uuid-melina" in text and "+4917620979406" in text
+    # Drop mit Absender-Details und Grund
+    assert "receive-drop" in text
+    assert "uuid-fremd" in text and "+4999999" in text
+    assert "not-in-JARVIS_ALLOWED_CHATS" in text
+    assert "Nicht erlaubt" in text
+    assert "1 Nachricht(en) verworfen" in text
+
+
+def test_receive_drop_reason_own_message(monkeypatch, caplog):
+    import asyncio
+    import logging
+
+    al = signal_client._Allowlist(False, {"uuid-1", "+4900000000000"}, set(), set())
+    _cache_allowlist(monkeypatch, al)
+    own = _dm_envelope(sourceNumber="+4900000000000")  # eigene Nummer aus conftest
+    _patch_request(monkeypatch, [own])
+    with caplog.at_level(logging.INFO, logger="signal_client"):
+        msgs = asyncio.run(signal_client.receive())
+    assert msgs == []
+    assert "receive-raw" in caplog.text
+    assert "reason=own-message" in caplog.text
+
+
+def test_sender_desc_and_text_preview():
+    env = {"sourceName": "Melina", "sourceNumber": "+49 176 20979406", "sourceUuid": "u-1"}
+    assert signal_client._sender_desc(env) == "Melina +4917620979406 u-1"
+    assert signal_client._sender_desc({"source": "+4912345"}) == "+4912345"
+    assert signal_client._sender_desc({"source": "uuid-abc"}) == "uuid-abc"
+    assert signal_client._sender_desc({}) == "unbekannt"
+    assert signal_client._text_preview("Hallo   Welt\nNeu", 120) == "Hallo Welt Neu"
+    assert signal_client._text_preview("x" * 200, 120) == "x" * 120 + "…"
+    assert signal_client._text_preview("", 120) == ""

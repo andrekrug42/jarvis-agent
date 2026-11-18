@@ -212,6 +212,10 @@ Auto-Fix/Format lokal: `uv run ruff check --fix .` und `uv run ruff format .`
 - Sessions enden spätestens nach 24 h idle bzw. 1 Woche gesamt (Maximum bei verwalteten
   Deployments, gesetzt im Dockerfile). Danach startet die Bridge automatisch eine neue Session;
   das Chat-Protokoll bleibt im Bridge-Log erhalten.
+- Empfangs-Logging: `/v1/receive` dequeuet destruktiv. Jeder Envelope mit Text wird direkt nach dem
+  Abholen als `receive-raw`-Zeile geloggt (Sender/Timestamp/Text-Vorschau), verworfene Chats zusätzlich
+  als `receive-drop`-Warnung mit Grund (`own-message` / `not-in-JARVIS_ALLOWED_CHATS`) – so bleibt auch
+  bei terminierten Runs ein Trace im Log.
 - Antworten können durch das 5-s-Polling (Schedule `PT5S`) plus Verarbeitungszeit bis zu ~10–15 s dauern.
   Latenz-Optimierung: Der State wird pro Run nur noch einmal geladen und an alle Activities durchgereicht
   (statt 3–4× pro Run), der GitHub-HEAD-Check für die Session-Epoche ist 60 s gecacht, die Antwort wird

@@ -284,6 +284,27 @@ def _is_own_message(env: dict, own_number: str) -> bool:
     return bool(source_number) and _norm_phone(source_number) == _norm_phone(own_number)
 
 
+def _sender_desc(env: dict) -> str:
+    """Absender kompakt fuer Log-Zeilen: 'Name +49123… uuid-…' (so viel wie vorhanden)."""
+    source = str(env.get("source") or "")
+    number = env.get("sourceNumber") or (source if source.startswith("+") else "")
+    uuid = env.get("sourceUuid") or (source if source and not source.startswith("+") else "")
+    parts = []
+    if env.get("sourceName"):
+        parts.append(str(env["sourceName"]))
+    if number:
+        parts.append(_norm_phone(str(number)))
+    if uuid:
+        parts.append(str(uuid))
+    return " ".join(parts) or "unbekannt"
+
+
+def _text_preview(text: str, limit: int = 120) -> str:
+    """Whitespace kollabieren und auf `limit` Zeichen kuerzen (Log-Vorschau)."""
+    clean = " ".join(str(text or "").split())
+    return clean[:limit] + ("…" if len(clean) > limit else "")
+
+
 def normalize(entry: dict, allowlist: _Allowlist | None = None) -> dict | None:
     """Formt einen receive-Envelope in ein flaches Nachrichten-Dict um (v1: nackter Envelope, v2: {"envelope": ...}). None = ignorieren (z. B. Receipts, eigene Nachrichten, nicht erlaubte Chats)."""
     env = entry.get("envelope") or entry
@@ -352,6 +373,12 @@ async def receive() -> list[dict]:
 
     Read-Receipts werden hier NICHT automatisch gesendet (send_read_receipts=false);
     die Bridge quittiert nur Nachrichten aus erlaubten Chats einzeln (send_read_receipt).
+
+    Logging: /v1/receive dequeuet DESTRUKTIV. Deshalb wird jeder Envelope mit dataMessage
+    direkt nach dem Abholen als `receive-raw`-Zeile geloggt (Sender/Timestamp/Text-Vorschau),
+    BEVOR gefiltert wird – wird der Run danach terminiert (z. B. Redeploy-Orphan), bleibt so
+    wenigstens ein Trace im Log. Verworfene Nachrichten bekommen zusaetzlich eine
+    `receive-drop`-Warnzeile mit Absender, Grund und Vorschau (nicht nur eine Anzahl).
     """
     base, number, headers = _config()
     allowlist = await _build_allowlist()
@@ -360,11 +387,33 @@ async def receive() -> list[dict]:
     messages = []
     dropped = 0
     for entry in entries or []:
+        env = entry.get("envelope") or entry
+        dm = env.get("dataMessage")
+        if dm:
+            group_info = dm.get("groupInfo") or {}
+            logger.info(
+                "receive-raw: ts=%s from=%s group=%s text=%r attachments=%d",
+                env.get("timestamp") or dm.get("timestamp") or 0,
+                _sender_desc(env),
+                group_info.get("groupId") or group_info.get("name") or "",
+                _text_preview(dm.get("message") or ""),
+                len(dm.get("attachments") or []),
+            )
         message = normalize(entry, allowlist)
         if message:
             messages.append(message)
-        elif (entry.get("envelope") or entry).get("dataMessage"):
+        elif dm:
             dropped += 1
+            group_info = dm.get("groupInfo") or {}
+            reason = "own-message" if _is_own_message(env, number) else "not-in-JARVIS_ALLOWED_CHATS"
+            logger.warning(
+                "receive-drop: ts=%s from=%s group=%s reason=%s text=%r",
+                env.get("timestamp") or dm.get("timestamp") or 0,
+                _sender_desc(env),
+                group_info.get("groupId") or group_info.get("name") or "",
+                reason,
+                _text_preview(dm.get("message") or ""),
+            )
     if dropped:
         logger.info("receive: %d Nachricht(en) verworfen (Chat nicht in JARVIS_ALLOWED_CHATS)", dropped)
     return messages
