@@ -1,10 +1,14 @@
+import logging
 import os
+from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import mistralai.workflows as workflows
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 LOG_LIMIT = 200
 PROCESSED_LIMIT = 500
@@ -214,10 +218,21 @@ def build_envelope(
     return "\n".join(lines)
 
 
+def _as_plain(obj: Any) -> Any:
+    """Dataclasses (z. B. SDK-Events/Records) rekursiv nach dict/list aufloesen, sonst unveraendert."""
+    if is_dataclass(obj) and not isinstance(obj, type):
+        try:
+            return asdict(obj)
+        except Exception:
+            return obj
+    return obj
+
+
 def extract_file_ids(obj: Any, found: list[str] | None = None) -> list[str]:
-    """Sammelt rekursiv alle file_id-Werte aus einem Turn-Record (z. B. generierte Bilder des image_generation-Tools)."""
+    """Sammelt rekursiv alle file_id-Werte (z. B. generierte Bilder des generate_image-Tools)."""
     if found is None:
         found = []
+    obj = _as_plain(obj)
     if isinstance(obj, dict):
         for key, value in obj.items():
             if key == "file_id" and isinstance(value, str) and value not in found:
@@ -246,9 +261,10 @@ def _is_trusted_image_url(url: str) -> bool:
 
 
 def extract_image_urls(obj: Any, found: list[str] | None = None) -> list[str]:
-    """Sammelt rekursiv alle image_url-Werte aus einem Turn-Record (z. B. Ergebnis des Tools generate_image)."""
+    """Sammelt rekursiv alle image_url-Werte (z. B. Ergebnis des Tools generate_image)."""
     if found is None:
         found = []
+    obj = _as_plain(obj)
     if isinstance(obj, dict):
         for key, value in obj.items():
             if key == "image_url" and isinstance(value, str) and value.startswith("http") and value not in found:
@@ -266,6 +282,27 @@ def extract_image_urls(obj: Any, found: list[str] | None = None) -> list[str]:
             except Exception:
                 pass
     return found
+
+
+def _image_payload_from_event(event: Any) -> Any | None:
+    """structured_content eines Tool-Result-Events (EntryCompleted), wenn es ein Bild traegt.
+
+    Der Completed-Record enthaelt nur tool_calls (Name+Argumente), NICHT die Ergebnisse -
+    deshalb wird das Bild ueber die Session-Events (on_event) eingesammelt.
+    """
+    try:
+        entry = getattr(event, "entry", None)
+        if entry is None:
+            return None
+        structured = getattr(entry, "structured_content", None)
+        if structured is None:
+            return None
+        dump = _as_plain(structured)
+        if isinstance(dump, dict) and ("image_url" in dump or "file_id" in dump):
+            return dump
+    except Exception:
+        return None
+    return None
 
 
 @workflows.activity(start_to_close_timeout=timedelta(seconds=60), retry_policy_max_attempts=2)
@@ -372,11 +409,23 @@ async def _process_message(message: dict[str, Any], state: dict[str, Any]) -> tu
 
     import asyncio
 
+    turn_image_payloads: list[Any] = []
+    events_seen = 0
+
+    def _collect_event(event: Any) -> None:
+        # Der Completed-Record enthaelt nur tool_calls (Name+Argumente), nicht die Ergebnisse -
+        # Bild-URLs/file_ids kommen ueber die Session-Events (on_event) als ToolResultEntry.
+        nonlocal events_seen
+        events_seen += 1
+        payload = _image_payload_from_event(event)
+        if payload is not None:
+            turn_image_payloads.append(payload)
+
     async def _run_with_retry(sess, turn_key: str):
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                return await sess.run(envelope, idempotency_key=turn_key)
+                return await sess.run(envelope, idempotency_key=turn_key, on_event=_collect_event)
             except Exception as error:
                 last_error = error
                 if attempt < 2:
@@ -397,20 +446,31 @@ async def _process_message(message: dict[str, Any], state: dict[str, Any]) -> tu
         session = await agent.start_session(idempotency_key=session_key)
         record = await _run_with_retry(session, f"signal-msg:{message['key']}")
     if isinstance(record, agents.Busy):
-        record = await record.turn.result()
+        record = await record.turn.result(on_event=_collect_event)
 
     reply_text = (getattr(record, "text", "") or "").strip()
-    generated_file_ids = extract_file_ids(record)
+    extraction_sources = [record, *turn_image_payloads]
+    generated_file_ids = extract_file_ids(extraction_sources)
+    image_urls = extract_image_urls(extraction_sources)
+    logger.info(
+        "bild-check key=%s: events=%d payloads=%d file_ids=%d urls=%d",
+        message["key"],
+        events_seen,
+        len(turn_image_payloads),
+        len(generated_file_ids),
+        len(image_urls),
+    )
 
     attachments_out: list[tuple[str, str, bytes]] = []
     for index, file_id in enumerate(generated_file_ids, 1):
         try:
             data = await state_store.download_mistral_file(file_id)
             attachments_out.append((f"jarvis-bild-{index}.png", "image/png", data))
-        except Exception:
-            pass
-    for url in extract_image_urls(record):
+        except Exception as error:
+            logger.warning("bild per file_id nicht ladbar (file_id=%s): %s", file_id, error)
+    for url in image_urls:
         if not _is_trusted_image_url(url):
+            logger.warning("image-url nicht vertraut, uebersprungen: %s", url)
             continue
         try:
             import httpx
@@ -421,8 +481,8 @@ async def _process_message(message: dict[str, Any], state: dict[str, Any]) -> tu
             mime = response.headers.get("content-type", "image/png").split(";")[0].strip() or "image/png"
             ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}.get(mime, "png")
             attachments_out.append((f"jarvis-bild-{len(attachments_out) + 1}.{ext}", mime, response.content))
-        except Exception:
-            pass
+        except Exception as error:
+            logger.warning("bild per url nicht ladbar (url=%s): %s", url, error)
 
     if (reply_text or attachments_out) and message.get("recipients"):
         await signal_client.send(message["recipients"], reply_text, attachments_out or None)

@@ -238,3 +238,40 @@ def test_current_build_sha_returns_last_known_on_error(monkeypatch):
     monkeypatch.setattr(bridge, "_build_sha_cache", "old-sha")
     monkeypatch.setattr(bridge, "_build_sha_fetched_at", 0.0)
     assert asyncio.run(bridge._current_build_sha()) == "old-sha"
+
+
+def test_extract_helpers_handle_dataclass_events():
+    from dataclasses import dataclass
+
+    @dataclass
+    class Entry:
+        name: str = "client.generate_image"
+        structured_content: object = None
+
+    @dataclass
+    class Event:
+        entry: object = None
+
+    ev = Event(entry=Entry(structured_content={"image_url": "https://files.mistral.ai/x.png", "file_id": "f1"}))
+    assert bridge.extract_image_urls([ev]) == ["https://files.mistral.ai/x.png"]
+    assert bridge.extract_file_ids([ev]) == ["f1"]
+
+
+def test_image_payload_from_event():
+    from dataclasses import dataclass
+
+    @dataclass
+    class Entry:
+        name: str = "client.generate_image"
+        structured_content: object = None
+
+    @dataclass
+    class Event:
+        entry: object = None
+
+    payload = bridge._image_payload_from_event(Event(entry=Entry(structured_content={"image_url": "https://files.mistral.ai/x.png"})))
+    assert payload == {"image_url": "https://files.mistral.ai/x.png"}
+    # kein Bild im Payload -> None
+    assert bridge._image_payload_from_event(Event(entry=Entry(structured_content={"prompt": "katze"}))) is None
+    assert bridge._image_payload_from_event(Event(entry=None)) is None
+    assert bridge._image_payload_from_event(object()) is None

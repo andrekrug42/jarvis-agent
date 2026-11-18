@@ -259,7 +259,7 @@ async def web_search(query: str) -> str:
 @agents.tool
 async def generate_image(prompt: str) -> dict:
     """Generiert ein Bild (Foto, Grafik, Illustration) anhand einer Beschreibung.
-    Gibt {"image_url": <URL des fertigen Bildes>} zurück; das Bild wird automatisch als Anhang an den Chat geschickt.
+    Gibt {"image_url": <URL>, "file_id": <Files-API-ID>} zurück; das Bild wird automatisch als Anhang an den Chat geschickt.
 
     `prompt`: genaue Bildbeschreibung, z. B. "R futuristisches Smart-Home-Dashboard, dunkles Design".
     """
@@ -284,7 +284,23 @@ async def generate_image(prompt: str) -> dict:
             if not url:
                 url = _find_first_url(info)
             if url:
-                return {"image_url": url}
+                payload = {"image_url": url}
+                # zusaetzlich in die Files-API hochladen -> file_id, damit die Bridge das Bild
+                # per Files-API holen kann (unabhaengig vom URL-Host)
+                try:
+                    import httpx
+
+                    client = _mistral_client()
+                    with httpx.Client(timeout=120) as http:
+                        img_resp = http.get(url)
+                        img_resp.raise_for_status()
+                    upload = client.files.upload(file={"file_name": "jarvis-bild.png", "content": img_resp.content}, purpose="ocr")
+                    file_id = upload.id if not isinstance(upload, dict) else upload["id"]
+                    if file_id:
+                        payload["file_id"] = file_id
+                except Exception:
+                    pass  # image_url bleibt als Fallback fuer die Bridge
+                return payload
     return {"image_url": "", "error": "Die Bildgenerierung lieferte kein Ergebnis."}
 
 
