@@ -1,12 +1,10 @@
 import os
-from datetime import datetime, timezone
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel
-
 import mistralai.workflows as workflows
+from pydantic import BaseModel
 
 LOG_LIMIT = 200
 PROCESSED_LIMIT = 500
@@ -15,11 +13,11 @@ DEFAULT_MAILBOX_INTERVAL_SECONDS = 3600
 DEFAULT_MAILBOX_MAX_MESSAGES = 10
 MAILBOX_PROMPT = (
     "[POSTFACH-CHECK] Pr\u00fcfe jetzt den Posteingang des JARVIS-Gmail-Kontos. "
-    "Lies zuerst das Regeln-Dokument \u201eJARVIS-Verhaltensregeln.md\" (Library \u201eAllgemeine Dokumente\") mit search_knowledge "
+    'Lies zuerst das Regeln-Dokument \u201eJARVIS-Verhaltensregeln.md" (Library \u201eAllgemeine Dokumente") mit search_knowledge '
     "(Gmail-Query, Snippet-first, Familien-Auto-Replies, unbekannte Absender, Anh\u00e4nge). "
     "Unbearbeitete Mails im Pr\u00fcf-Scope: maximal {max_messages}. "
-    "Beginne deine Antwort IMMER mit einer eigenen ersten Zeile im exakten Format \"MAILS: <Anzahl>\" "
-    "(z. B. \"MAILS: 0\"). Nur bei MAILS > 0 schickt die Bridge die folgende Nachricht als Signal-DM an Andre; "
+    'Beginne deine Antwort IMMER mit einer eigenen ersten Zeile im exakten Format "MAILS: <Anzahl>" '
+    '(z. B. "MAILS: 0"). Nur bei MAILS > 0 schickt die Bridge die folgende Nachricht als Signal-DM an Andre; '
     "danach eine kurze, nat\u00fcrliche Nachricht im Signal-Stil (pro Mail 1\u20132 S\u00e4tze: wer, worum geht's, was wurde gemacht)."
 )
 
@@ -156,11 +154,9 @@ def build_envelope(
         lines.append(f"Account-Inhaber: {owner}")
     lines.append(f"Chat: {message['chat_label']}")
     lines.append(f"Chat-Key: {message['chat_key']}")
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     berlin = now_utc.astimezone(ZoneInfo("Europe/Berlin"))
-    lines.append(
-        f"Aktuelle Zeit: {berlin.strftime('%Y-%m-%d %H:%M')} Europe/Berlin ({now_utc.strftime('%Y-%m-%d %H:%M')} UTC)"
-    )
+    lines.append(f"Aktuelle Zeit: {berlin.strftime('%Y-%m-%d %H:%M')} Europe/Berlin ({now_utc.strftime('%Y-%m-%d %H:%M')} UTC)")
     lines.append(
         f"Absender dieser Nachricht: {message['sender_name']} "
         f"(Nummer: {message['sender_number'] or '–'}, UUID: {message['sender_uuid'] or '–'})"
@@ -292,9 +288,7 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
                 audio_transcripts.append(f"{attachment['filename']}: {transcript or '(kein Text erkannt)'}")
                 continue
             file_id = await state_store.upload_attachment(attachment["filename"], attachment["content_type"], data)
-            files_info.append(
-                {"filename": attachment["filename"], "content_type": attachment["content_type"], "file_id": file_id}
-            )
+            files_info.append({"filename": attachment["filename"], "content_type": attachment["content_type"], "file_id": file_id})
             content_type = attachment["content_type"]
             if not (content_type.startswith(("image/", "video/"))):
                 document_files.append((attachment, data))
@@ -309,6 +303,7 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
     log_lines = [
         f"{entry.get('ts', '')} | {entry.get('chat', '')} | {entry.get('sender', '')}: {entry.get('summary', '')}"
         for entry in state.get("log", [])[-LOG_CONTEXT_ENTRIES:]
+        if entry.get("chat") != message["chat_label"]  # nur ANDERE Chats ins Cross-Chat-Gedaechtnis
     ]
     envelope = build_envelope(
         message,
@@ -332,9 +327,7 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
             resp = await http.get(f"https://api.github.com/repos/{repo}/commits/{branch}")
         build_sha = resp.json().get("sha") if resp.status_code == 200 else None
         if build_sha:
-            stale = chat_state.get("agent_build") != build_sha and (
-                chat_state.get("agent_build") or chat_state.get("session_key")
-            )
+            stale = chat_state.get("agent_build") != build_sha and (chat_state.get("agent_build") or chat_state.get("session_key"))
             if stale:
                 chat_state["session_epoch"] = int(chat_state.get("session_epoch", 0)) + 1
                 chat_state["session_key"] = f"signal-chat:{message['chat_key']}:e{chat_state['session_epoch']}"
@@ -426,9 +419,7 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
                     )
                     library_id = decision.get("library_id")
                     if library_id:
-                        await state_store.upload_document_to_library(
-                            library_id, attachment["filename"], attachment["content_type"], data
-                        )
+                        await state_store.upload_document_to_library(library_id, attachment["filename"], attachment["content_type"], data)
                         library_name = next((lib["name"] for lib in libraries if lib["id"] == library_id), library_id)
                         filed_notes.append(
                             f"Dokument '{attachment['filename']}' in Library '{library_name}' abgelegt ({decision.get('reason', '')})"
@@ -438,14 +429,11 @@ async def _process_message(message: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     summary = _truncate(
-        f"{message['text'] or '(Anhang)'} -> {reply_text or '(Bild)'}"
-        + (" | " + "; ".join(filed_notes) if filed_notes else "")
+        f"{message['text'] or '(Anhang)'} -> {reply_text or '(Bild)'}" + (" | " + "; ".join(filed_notes) if filed_notes else "")
     )
-    state.setdefault("log", []).append(
-        {"ts": now, "chat": message["chat_label"], "sender": message["sender_name"], "summary": summary}
-    )
+    state.setdefault("log", []).append({"ts": now, "chat": message["chat_label"], "sender": message["sender_name"], "summary": summary})
     state["log"] = state["log"][-LOG_LIMIT:]
     state.setdefault("processed", []).append(message["key"])
     state["processed"] = state["processed"][-PROCESSED_LIMIT:]
@@ -673,7 +661,7 @@ async def _drain_outbox() -> list[dict[str, Any]]:
             entry["chat_key"] = chat_key
             state.setdefault("log", []).append(
                 {
-                    "ts": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                    "ts": datetime.now(UTC).strftime("%Y-%m-%d %H:%M"),
                     "chat": label,
                     "sender": "JARVIS (proaktiv)",
                     "summary": (entry.get("message") or "")[:240],

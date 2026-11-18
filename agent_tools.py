@@ -3,6 +3,8 @@ import base64
 import json
 import os
 import re
+import uuid
+from datetime import UTC
 
 from mistralai import agents
 
@@ -87,12 +89,15 @@ def _ocr_document(data: bytes) -> tuple[str, str]:
 
 
 @agents.tool
-async def describe_image(file_id: str, question: str = "Beschreibe das Bild ausführlich: Was ist zu sehen, welche Texte/Elemente gibt es?") -> str:
+async def describe_image(
+    file_id: str, question: str = "Beschreibe das Bild ausführlich: Was ist zu sehen, welche Texte/Elemente gibt es?"
+) -> str:
     """Versteht ein Bild (Foto, Screenshot, Grafik, Meme): liest Texte auf dem Bild und beschreibt den Inhalt.
 
     `file_id`: die file_id des Bild-Anhangs aus dem KONTEXT-Block der Nachricht.
     `question`: die konkrete Frage zum Bild, z. B. "Was steht auf dem Whiteboard?".
     """
+
     def _run() -> str:
         client = _mistral_client()
         data = _download_file(client, file_id)
@@ -122,6 +127,7 @@ async def read_document(file_id: str, question: str = "") -> str:
     `file_id`: die file_id des Dokument-Anhangs aus dem KONTEXT-Block der Nachricht.
     `question`: optional eine konkrete Frage zum Dokument; dann wird das Dokument gelesen und die Frage direkt beantwortet.
     """
+
     def _download() -> bytes:
         return _download_file(_mistral_client(), file_id)
 
@@ -143,6 +149,7 @@ async def read_document(file_id: str, question: str = "") -> str:
     text = await asyncio.to_thread(_as_tool_error(_ocr))
 
     if question:
+
         def _qa() -> str:
             client = _mistral_client()
             response = client.chat.complete(
@@ -236,6 +243,7 @@ async def web_search(query: str) -> str:
 
     `query`: die Suchfrage, z. B. "Wettervorhersage Hamburg morgen".
     """
+
     def _run():
         return _conversation_sync(SEARCH_MODEL, [{"type": "web_search"}], query)
 
@@ -255,6 +263,7 @@ async def generate_image(prompt: str) -> dict:
 
     `prompt`: genaue Bildbeschreibung, z. B. "R futuristisches Smart-Home-Dashboard, dunkles Design".
     """
+
     def _run():
         return _conversation_sync(IMAGE_MODEL, [{"type": "image_generation"}], prompt)
 
@@ -382,6 +391,7 @@ async def search_knowledge(query: str) -> str:
 
     `query`: die Frage, z. B. "Was hat Anna über den Urlaub im August geschrieben?".
     """
+
     def _run() -> str:
         library_ids = _resolve_library_ids()
         if not library_ids:
@@ -390,9 +400,7 @@ async def search_knowledge(query: str) -> str:
             "Beantworte die folgende Frage ausschließlich anhand der Dokumente in den verbundenen Libraries. "
             "Antworte auf Deutsch, prägnant, und nenne am Ende die Dokumentnamen als Quellen.\n\nFrage: " + query
         )
-        response = _conversation_sync(
-            SEARCH_MODEL, [{"type": "document_library", "library_ids": library_ids}], inputs
-        )
+        response = _conversation_sync(SEARCH_MODEL, [{"type": "document_library", "library_ids": library_ids}], inputs)
         text, _ = _conversation_text(response)
         return text or "(In den Libraries wurde nichts Passendes gefunden.)"
 
@@ -408,6 +416,7 @@ async def save_person_info(person: str, info: str) -> str:
     `person`: Vorname der Person, z. B. "Anna".
     `info`: die Kontaktdaten als Text/Markdown, z. B. "E-Mail: anna@beispiel.de, Adresse: Musterstr. 1, 12345 Stadt".
     """
+
     def _run() -> str:
         return _save_person_info_sync(person.strip(), info)
 
@@ -421,6 +430,7 @@ async def read_person_info(person: str) -> str:
 
     `person`: Vorname der Person, z. B. "Anna".
     """
+
     def _run() -> str:
         return _read_person_info_sync(person.strip())
 
@@ -437,12 +447,13 @@ async def save_mail_attachment(filename: str, content_base64: str, mime_type: st
     `content_base64`: base64-kodierter Inhalt (aus get_message_attachment(messageId, attachmentId) bzw. get_message mit FULL_CONTENT).
     `mime_type`: MIME-Typ des Anhangs, z. B. "application/pdf".
     """
+
     def _run() -> str:
         client = _mistral_client()
         try:
             data = base64.b64decode(content_base64, validate=False)
         except Exception as exc:
-            raise agents.ToolError(f"base64-Dekodierung fehlgeschlagen: {exc}")
+            raise agents.ToolError(f"base64-Dekodierung fehlgeschlagen: {exc}") from exc
         upload = client.files.upload(file={"file_name": filename, "content": data}, purpose="ocr")
         file_id = upload.id if not isinstance(upload, dict) else upload["id"]
         return f"Anhang '{filename}' in der Files-API gespeichert: file_id={file_id} ({len(data)} Bytes, {mime_type})."
@@ -462,7 +473,6 @@ async def file_attachment_to_library(file_id: str, filename: str, person: str = 
     """
     import mimetypes
 
-
     def _download() -> bytes:
         return _download_file(_mistral_client(), file_id)
 
@@ -470,6 +480,7 @@ async def file_attachment_to_library(file_id: str, filename: str, person: str = 
     mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     person = (person or "").strip()
     if person:
+
         def _find():
             return _find_library_for_person(_mistral_client(), person)
 
@@ -479,9 +490,7 @@ async def file_attachment_to_library(file_id: str, filename: str, person: str = 
         library_id, library_name = found
     else:
         libraries = await state_store.list_family_libraries()
-        decision = await state_store.classify_document(
-            filename, mime, data, libraries, context="Mail-Anhang aus dem JARVIS-Postfach"
-        )
+        decision = await state_store.classify_document(filename, mime, data, libraries, context="Mail-Anhang aus dem JARVIS-Postfach")
         library_id = decision.get("library_id")
         library_name = next((lib["name"] for lib in libraries if lib["id"] == library_id), None)
         if not library_id:
@@ -501,16 +510,16 @@ async def send_signal_message(target: str, message: str) -> str:
     (JARVIS_ALLOWED_CHATS) und sendet per Signal. Bei nicht erlaubtem Ziel wird NICHTS gesendet und der
     Account-Inhaber per DM informiert.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     state = await state_store.load()
     outbox = state.setdefault("outbox", [])
     open_count = sum(1 for o in outbox if o.get("status") in ("pending", "sending"))
     if open_count >= 50:
         raise agents.ToolError("zu viele offene Sende-Aufträge (max. 50)")
     entry = {
-        "id": f"msg-{int(now.timestamp() * 1000)}",
+        "id": f"msg-{int(now.timestamp() * 1000)}-{uuid.uuid4().hex[:8]}",
         "target": target.strip(),
         "message": message.strip()[:4000],
         "status": "pending",
@@ -520,8 +529,7 @@ async def send_signal_message(target: str, message: str) -> str:
     state["outbox"] = [
         o
         for o in outbox
-        if o.get("status") in ("pending", "sending")
-        or now.timestamp() - float(o.get("finished", now.timestamp())) < 7 * 86400
+        if o.get("status") in ("pending", "sending") or now.timestamp() - float(o.get("finished", now.timestamp())) < 7 * 86400
     ][-100:]
     await state_store.save(state)
     return f"In die Outbox gelegt ✅ – die Bridge sendet „{message.strip()[:80]}“ in wenigen Sekunden an „{target.strip()}“ (Allowlist wird geprüft)."
@@ -567,9 +575,7 @@ async def schedule_task(when_iso: str, action: str, target: str = "") -> str:
             f"(aktuelle Zeit: {now_berlin} Europe/Berlin). Antworte NUR mit dem ISO-String, z. B. 2026-11-17T21:46:00+01:00.\n"
             f"Zeitangabe: {text}"
         )
-        response = client.chat.complete(
-            model=TASK_PARSE_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0
-        )
+        response = client.chat.complete(model=TASK_PARSE_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0)
         content = response.choices[0].message.content
         raw_out = content if isinstance(content, str) else str(content)
         match = re.search(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?([+-]\d{2}:?\d{2}|Z)?", raw_out)
@@ -585,12 +591,12 @@ async def schedule_task(when_iso: str, action: str, target: str = "") -> str:
 
     try:
         due = await asyncio.to_thread(_parse_when, when_iso)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         due_ts = due.timestamp()
         if due_ts < now.timestamp() + 30:
             raise agents.ToolError("Zeitpunkt liegt in der Vergangenheit (mindestens +30 Sekunden ab jetzt)")
         task = {
-            "id": f"task-{int(now.timestamp() * 1000)}",
+            "id": f"task-{int(now.timestamp() * 1000)}-{uuid.uuid4().hex[:8]}",
             "due": due_ts,
             "due_iso": due.isoformat(),
             "action": action.strip()[:2000],
@@ -607,8 +613,7 @@ async def schedule_task(when_iso: str, action: str, target: str = "") -> str:
         state["tasks"] = [
             t
             for t in tasks
-            if t.get("status") in ("pending", "running")
-            or now.timestamp() - float(t.get("finished", now.timestamp())) < 7 * 86400
+            if t.get("status") in ("pending", "running") or now.timestamp() - float(t.get("finished", now.timestamp())) < 7 * 86400
         ][-200:]
         await state_store.save(state)
         return (

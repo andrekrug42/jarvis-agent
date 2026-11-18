@@ -12,6 +12,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.8",
+    "mypy>=1.11",
 ]
 
 [tool.uv]
@@ -26,8 +27,17 @@ line-length = 140
 target-version = "py312"
 
 [tool.ruff.lint]
-# bewusst schlank: nur echte Fehler (Pyflakes F + Syntax E9), kein Reformat-Storm
-select = ["E9", "F"]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]  # lange Zeilen (v. a. lange String-Literale) nicht anfassen
+
+[tool.ruff.lint.isort]
+known-first-party = ["agent_tools", "bridge", "bridge_worker", "main", "signal_client", "state_store"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = false
+follow_imports = "normal"
 
 [tool.mistralai.agents]
 entrypoint = "main:agent"

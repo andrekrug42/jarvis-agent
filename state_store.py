@@ -83,9 +83,7 @@ def _load_sync() -> dict:
     library_id = _find_library(client)
     if not library_id:
         return _default_state()
-    docs = _documents(client).list(
-        library_id=library_id, search=STATE_DOC_NAME, sort_by="created_at", sort_order="desc", page_size=100
-    )
+    docs = _documents(client).list(library_id=library_id, search=STATE_DOC_NAME, sort_by="created_at", sort_order="desc", page_size=100)
     doc = next((d for d in (docs.data or []) if d.name == STATE_DOC_NAME), None)
     if doc is None:
         return _default_state()
@@ -146,9 +144,7 @@ def _transcribe_sync(file_name: str, data: bytes) -> str:
     client = _mistral_client()
     model = os.environ.get("JARVIS_AUDIO_MODEL", "voxtral-mini-latest")
     try:
-        result = client.audio.transcriptions.complete(
-            model=model, file={"file_name": file_name, "content": data}, language="de"
-        )
+        result = client.audio.transcriptions.complete(model=model, file={"file_name": file_name, "content": data}, language="de")
     except Exception:
         upload = client.files.upload(file={"file_name": file_name, "content": data}, purpose="audio")
         file_id = upload.id if not isinstance(upload, dict) else upload["id"]
@@ -217,7 +213,7 @@ def _classify_sync(filename: str, content_type: str, data: bytes, libraries: lis
         "'Dokumente zu <Name>'; allgemeine Dokumente (Verträge, Anleitungen, Rechnungen der Familie) in "
         "'Allgemeine Dokumente'; alles andere Unwichtige (z. B. flüchtige Screenshots ohne Bezug) nach 'Sonstiges' "
         "ODER null, wenn es gar nicht abgelegt werden soll (reiner Chat-Content ohne Mehrwert). "
-        "Antworte AUSSCHLIESSLICH mit einem JSON-Objekt: {\"library_id\": \"<id oder null>\", \"reason\": \"<kurzer Grund auf Deutsch>\"}.\n\n"
+        'Antworte AUSSCHLIESSLICH mit einem JSON-Objekt: {"library_id": "<id oder null>", "reason": "<kurzer Grund auf Deutsch>"}.\n\n'
         f"Libraries:\n{lib_desc}\n\nKontext: {context}\nDatei: {filename} ({content_type})\n"
         f"Auszug des Inhalts:\n{text or '(kein Text extrahierbar, nur Dateiname/Typ)'}"
     )
@@ -237,22 +233,19 @@ def _classify_sync(filename: str, content_type: str, data: bytes, libraries: lis
     valid_ids = {lib["id"] for lib in libraries}
     if library_id not in valid_ids:
         library_id = None
-    reason = decision.get("reason") if isinstance(decision.get("reason"), str) else ""
+    raw_reason = decision.get("reason")
+    reason = raw_reason if isinstance(raw_reason, str) else ""
     return {"library_id": library_id, "reason": reason[:200]}
 
 
-async def classify_document(
-    filename: str, content_type: str, data: bytes, libraries: list[dict], context: str
-) -> dict:
+async def classify_document(filename: str, content_type: str, data: bytes, libraries: list[dict], context: str) -> dict:
     """Entscheidet per LLM, ob ein Dokument in eine der Libraries abgelegt werden soll (und welche)."""
     return await asyncio.to_thread(_classify_sync, filename, content_type, data, libraries, context)
 
 
 def _upload_document_sync(library_id: str, filename: str, content_type: str, data: bytes) -> str:
     client = _mistral_client()
-    doc = _documents(client).upload(
-        library_id=library_id, file={"file_name": filename, "content": data, "content_type": content_type}
-    )
+    doc = _documents(client).upload(library_id=library_id, file={"file_name": filename, "content": data, "content_type": content_type})
     return doc.id if not isinstance(doc, dict) else doc["id"]
 
 

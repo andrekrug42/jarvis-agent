@@ -68,6 +68,18 @@ agent = agents.Agent(
         "sowie, was mit den einzelnen Personen besprochen wurde."
     ),
     instructions=INSTRUCTIONS,
-    tools=[describe_image, read_document, web_search, generate_image, search_knowledge, save_person_info, read_person_info, save_mail_attachment, file_attachment_to_library, send_signal_message, schedule_task],
+    tools=[
+        describe_image,
+        read_document,
+        web_search,
+        generate_image,
+        search_knowledge,
+        save_person_info,
+        read_person_info,
+        save_mail_attachment,
+        file_attachment_to_library,
+        send_signal_message,
+        schedule_task,
+    ],
     connectors=[_gmail_connector(), _calendar_connector()],
 )

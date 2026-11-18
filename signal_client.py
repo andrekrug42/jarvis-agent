@@ -15,13 +15,20 @@ _effective_base: str | None = None
 _allowlist_cache: "_Allowlist | None" = None
 _allowlist_fetched_at: float = 0.0
 _allowlist_warned = False
-
-DEFAULT_OWNER_UUID = "ac4f2a1b-fd6f-4ca7-8014-80486abc623d"
+_owner_warned = False
 
 
 def owner_dm_recipient() -> str | None:
-    """Signal-UUID des Account-Inhabers für Benachrichtigungen (nur 1:1 an ihn)."""
-    return os.environ.get("JARVIS_OWNER_UUID", "").strip() or DEFAULT_OWNER_UUID
+    """Signal-UUID des Account-Inhabers für Benachrichtigungen (nur 1:1 an ihn).
+
+    Kein Default im Code (Repo ist öffentlich) – nur per JARVIS_OWNER_UUID setzen.
+    """
+    global _owner_warned
+    value = os.environ.get("JARVIS_OWNER_UUID", "").strip()
+    if not value and not _owner_warned:
+        _owner_warned = True
+        logger.warning("JARVIS_OWNER_UUID ist nicht gesetzt – Owner-DMs (Postfach/Fail-closed/Fehler) werden nicht versendet")
+    return value or None
 
 
 class _Allowlist:
@@ -38,9 +45,7 @@ class _Allowlist:
             return True
         if group_id:
             return group_id in self.group_ids or (bool(group_name) and group_name.lower() in self.group_names)
-        return (bool(sender_uuid) and sender_uuid in self.dm_ids) or (
-            bool(sender_number) and sender_number in self.dm_ids
-        )
+        return (bool(sender_uuid) and sender_uuid in self.dm_ids) or (bool(sender_number) and sender_number in self.dm_ids)
 
 
 def _allowlist_entries() -> list[str]:
@@ -151,7 +156,9 @@ async def _build_allowlist() -> _Allowlist:
             logger.warning("Allowlist: Eintraege ohne passenden Kontakt/Gruppe: %s", ", ".join(unresolved))
         logger.info(
             "Allowlist aktiv: %d DM-IDs, %d Gruppen-IDs, Gruppennamen=%s",
-            len(dm_ids), len(group_ids), sorted(group_names),
+            len(dm_ids),
+            len(group_ids),
+            sorted(group_names),
         )
         allowlist = _Allowlist(False, dm_ids, group_ids, group_names)
     _allowlist_cache = allowlist
@@ -212,6 +219,7 @@ async def _request(method: str, path: str, base: str, headers: dict[str, str], t
         if response.status_code != 404:
             _effective_base = candidate
             break
+    assert response is not None
     if response.is_error:
         raise httpx.HTTPStatusError(
             f"{response.status_code} for url {response.url}: {response.text[:500]}",
@@ -304,9 +312,7 @@ async def receive() -> list[dict]:
     """
     base, number, headers = _config()
     allowlist = await _build_allowlist()
-    response = await _request(
-        "GET", f"/v1/receive/{number}?send_read_receipts=false", base, headers, RECEIVE_TIMEOUT_SECONDS
-    )
+    response = await _request("GET", f"/v1/receive/{number}?send_read_receipts=false", base, headers, RECEIVE_TIMEOUT_SECONDS)
     entries = response.json()
     messages = []
     dropped = 0
@@ -336,8 +342,7 @@ async def send(recipients: list[str], message: str, attachments: list[tuple[str,
         if not message:
             payload["message"] = " "
         payload["base64_attachments"] = [
-            f"data:{mime};filename={filename};base64,{base64.b64encode(data).decode()}"
-            for filename, mime, data in attachments
+            f"data:{mime};filename={filename};base64,{base64.b64encode(data).decode()}" for filename, mime, data in attachments
         ]
     response = await _request("POST", "/v2/send", base, headers, 120, json=payload)
     return response.json() if response.content else {}
@@ -415,8 +420,7 @@ async def resolve_target(target: str) -> tuple[list[str], str, str]:
         raise ValueError(f"mehrere Gruppen gefunden ({', '.join(names)}) – bitte den Gruppennamen angeben")
     for contact in contacts:
         if any(
-            _name_matches(str(contact.get(field) or ""), lowered)
-            for field in ("name", "given_name", "profile_name", "number", "username")
+            _name_matches(str(contact.get(field) or ""), lowered) for field in ("name", "given_name", "profile_name", "number", "username")
         ):
             uuid = str(contact.get("uuid") or "")
             contact_number = str(contact.get("number") or "")

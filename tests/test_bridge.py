@@ -119,10 +119,11 @@ def test_merge_agent_writes_survives_failed_load(monkeypatch):
     assert local["outbox"] == [{"id": "msg-1", "status": "pending"}]
 
 
-def test_owner_dm_recipient_default():
-    import importlib
-
+def test_owner_dm_recipient_env_only(monkeypatch):
     import signal_client
 
-    importlib.reload(signal_client)
-    assert bridge._owner_dm_recipient() == signal_client.DEFAULT_OWNER_UUID
+    monkeypatch.delenv("JARVIS_OWNER_UUID", raising=False)
+    signal_client._owner_warned = False
+    assert bridge._owner_dm_recipient() is None  # kein Default mehr im Code
+    monkeypatch.setenv("JARVIS_OWNER_UUID", "uuid-owner")
+    assert bridge._owner_dm_recipient() == "uuid-owner"

@@ -21,7 +21,7 @@ def test_parse_state_adds_default_keys():
 
 
 def test_parse_state_invalid_json_raises():
-    with pytest.raises(Exception):
+    with pytest.raises(json.JSONDecodeError):
         state_store._parse_state("```json\n{not json}\n```")
 
 

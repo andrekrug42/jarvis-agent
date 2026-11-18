@@ -178,6 +178,7 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `JARVIS_AGENT_NAME` | nein | Name des Agenten, Standard `jarvis` |
 | `JARVIS_AGENT_API_KEY` | ja (Bridge) | User-API-Key für `Agent.load_from`/`start_session` (Sessions nur als User möglich); Fallback: Service-Account-Token des Deployments |
 | `JARVIS_OWNER_NAME` | nein | Name des Account-Inhabers für den Kontext |
+| `JARVIS_OWNER_UUID` | ja (Bridge) | Signal-UUID des Account-Inhabers (Andre). Nur dieser bekommt Owner-DMs: 📬 Postfach-Benachrichtigungen (nur wenn MAILS > 0), ⚠️ Fehler-DMs (z. B. Task-Fehler) und die einmalige Warnung bei leerer/fail-closed Allowlist. Es gibt keinen hartkodierten Default mehr im Repo – als Secret `JARVIS_OWNER_UUID` an die Bridge binden, sonst sind Owner-DMs deaktiviert (ein Hinweis im Log) |
 | `JARVIS_MAILBOX_INTERVAL_SECONDS` | nein | Intervall des autonomen Postfach-Checks in Sekunden, Standard `3600` (1× pro Stunde) |
 | `JARVIS_MAILBOX_MAX_MESSAGES` | nein | max. unbearbeitete Mails pro Postfach-Check, Standard `10` |
 | `JARVIS_SEARCH_MODEL` | nein | Modell für web_search/search_knowledge/read_document-QA, Standard `mistral-medium-latest` |
@@ -186,6 +187,21 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `JARVIS_CLASSIFY_MODEL` | nein | Modell für Dokument-Klassifizierung (Auto-Ablegen), Standard `mistral-small-latest` |
 | `JARVIS_TASK_PARSE_MODEL` | nein | Modell für Zeitangaben-Parsing in schedule_task, Standard `mistral-small-latest` |
 | `JARVIS_AUDIO_MODEL` | nein | Modell für Sprachnachrichten-Transkription, Standard `voxtral-mini-latest` |
+
+## Entwicklung
+
+Lokale Checks (identisch zur CI in `.github/workflows/ci.yml`):
+
+```bash
+uv sync --frozen --group dev
+uv run python -m py_compile main.py bridge.py bridge_worker.py agent_tools.py state_store.py signal_client.py
+uv run ruff check .            # volle Regeln (E, F, W, I, UP, B)
+uv run ruff format --check .
+uv run pytest -q
+uv run mypy signal_client.py state_store.py
+```
+
+Auto-Fix/Format lokal: `uv run ruff check --fix .` und `uv run ruff format .`
 
 ## Hinweise
 
