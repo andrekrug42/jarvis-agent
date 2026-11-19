@@ -277,6 +277,15 @@ def test_image_payload_from_event():
     assert bridge._image_payload_from_event(object()) is None
 
 
+def test_parse_deployment_health():
+    assert bridge._parse_deployment_health({"is_active": True, "workers": [{"id": "w1"}]}, "jarvis") == (True, "is_active=True workers=1")
+    ok, err = bridge._parse_deployment_health({"is_active": False, "workers": []}, "jarvis")
+    assert ok is False and "is_active=False" in err
+    # gewrapptes Shape und workers-allein reichen als "up"
+    assert bridge._parse_deployment_health({"deployment": {"is_active": True, "workers": []}}, "jarvis")[0] is True
+    assert bridge._parse_deployment_health({"is_active": False, "workers": [{"id": "w"}]}, "jarvis")[0] is True
+
+
 def test_is_agent_down_error():
     assert bridge._is_agent_down_error(
         Exception(

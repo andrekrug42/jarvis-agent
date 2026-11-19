@@ -94,8 +94,19 @@ async def _probe_agent_via_session() -> tuple[bool, str]:
         return False, f"{type(error).__name__}: {str(error)[:200]}"
 
 
+def _parse_deployment_health(data: dict[str, Any], name: str) -> tuple[bool, str]:
+    """DeploymentDetailResponse: ok = is_active (mindestens ein Worker live) oder workers-Liste nicht leer."""
+    if isinstance(data.get("deployment"), dict):
+        data = data["deployment"]
+    active = bool(data.get("is_active"))
+    workers = data.get("workers") or []
+    if active or len(workers) > 0:
+        return True, f"is_active={active} workers={len(workers)}"
+    return False, f"deployment {name}: is_active=False workers=0 last_heartbeat={data.get('last_heartbeat')}"
+
+
 async def _probe_agent() -> tuple[bool, str]:
-    """Read-only Probe: GET /v1/workflows/deployments/{name} -> ready_replicas. Fallback: Session-Start (409 = down)."""
+    """Read-only Probe: GET /v1/workflows/deployments/{name} -> is_active/workers. Fallback: Session-Start (409 = down)."""
     import httpx
 
     key = _control_api_key()
@@ -106,14 +117,7 @@ async def _probe_agent() -> tuple[bool, str]:
         async with httpx.AsyncClient(timeout=15) as http:
             response = await http.get(f"{CONTROL_API_BASE}/v1/workflows/deployments/{name}", headers={"Authorization": f"Bearer {key}"})
         if response.status_code == 200:
-            data = response.json()
-            status = data.get("status") or {}
-            ready = int(status.get("ready_replicas") or 0)
-            phase = str(status.get("phase") or data.get("rollout_status") or "")
-            stopped = bool(data.get("stopped"))
-            if stopped or ready < 1 or phase == "failed":
-                return False, f"deployment {name}: ready_replicas={ready} phase={phase or '?'} stopped={stopped}"
-            return True, f"ready_replicas={ready}"
+            return _parse_deployment_health(response.json(), name)
         if response.status_code in (401, 403):
             return await _probe_agent_via_session()
         return False, f"GET deployment -> {response.status_code}: {response.text[:160]}"
