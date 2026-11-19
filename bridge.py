@@ -30,12 +30,282 @@ _agent_registered = False
 _build_sha_cache: str | None = None
 _build_sha_fetched_at: float = 0.0
 
+# Agent-Health-Guard: /v1/receive dequeued destructiv — bei "down" wird NICHT gepollt,
+# damit Nachrichten in der Signal-Queue bleiben (kein Verlust).
+CONTROL_API_BASE = "https://api.mistral.ai"
+AGENT_PROBE_TTL_SECONDS = 45
+AGENT_PROBE_SESSION_KEY = "jarvis-health-probe"
+DEFAULT_AGENT_RESTART_INTERVAL_SECONDS = 4 * 3600  # praeventiver Restart des Agent-Deployments, 0 = aus
+PLANNED_RESTART_WINDOW_SECONDS = 420
+POLL_TIMEOUT_DM_MIN_INTERVAL_SECONDS = 1800
+
+_agent_probe_ok: bool | None = None
+_agent_probe_at: float = 0.0
+_agent_probe_error: str = ""
+_poll_timeout_dm_at: float = 0.0
+
 
 def _owner_dm_recipient() -> str | None:
     """Signal-UUID des Account-Inhabers für Benachrichtigungen (nur 1:1 an ihn)."""
     import signal_client
 
     return signal_client.owner_dm_recipient()
+
+
+def _control_api_key() -> str:
+    key = os.environ.get("JARVIS_AGENT_API_KEY", "").strip()
+    if key:
+        return key
+    token_path = os.environ.get("MISTRAL_SA_TOKEN_PATH", "")
+    if token_path and os.path.exists(token_path):
+        try:
+            with open(token_path, encoding="utf-8") as handle:
+                return handle.read().strip()
+        except Exception:
+            return ""
+    return ""
+
+
+def _agent_deployment_name() -> str:
+    return os.environ.get("JARVIS_DEPLOYMENT_NAME", "").strip() or os.environ.get("JARVIS_AGENT_NAME", "jarvis")
+
+
+def _is_agent_down_error(error: BaseException) -> bool:
+    text = str(error)
+    return "no worker serves" in text or "409 Conflict" in text
+
+
+async def _probe_agent_via_session() -> tuple[bool, str]:
+    from mistralai import agents
+
+    agent_name = os.environ.get("JARVIS_AGENT_NAME", "jarvis")
+    user_api_key = os.environ.get("JARVIS_AGENT_API_KEY", "").strip()
+    try:
+        if user_api_key:
+            await ensure_agent_registered(agent_name, user_api_key)
+            agent = agents.Agent.load_from(agent_name=agent_name, api_key=user_api_key)
+        else:
+            key = _control_api_key()
+            client = agents.Client(api_key=key) if key else agents.Client()
+            agent = agents.Agent.load_from(agent_name=agent_name, client=client)
+        await agent.start_session(idempotency_key=AGENT_PROBE_SESSION_KEY)
+        return True, ""
+    except Exception as error:
+        return False, f"{type(error).__name__}: {str(error)[:200]}"
+
+
+async def _probe_agent() -> tuple[bool, str]:
+    """Read-only Probe: GET /v1/workflows/deployments/{name} -> ready_replicas. Fallback: Session-Start (409 = down)."""
+    import httpx
+
+    key = _control_api_key()
+    if not key:
+        return await _probe_agent_via_session()
+    name = _agent_deployment_name()
+    try:
+        async with httpx.AsyncClient(timeout=15) as http:
+            response = await http.get(f"{CONTROL_API_BASE}/v1/workflows/deployments/{name}", headers={"Authorization": f"Bearer {key}"})
+        if response.status_code == 200:
+            data = response.json()
+            status = data.get("status") or {}
+            ready = int(status.get("ready_replicas") or 0)
+            phase = str(status.get("phase") or data.get("rollout_status") or "")
+            stopped = bool(data.get("stopped"))
+            if stopped or ready < 1 or phase == "failed":
+                return False, f"deployment {name}: ready_replicas={ready} phase={phase or '?'} stopped={stopped}"
+            return True, f"ready_replicas={ready}"
+        if response.status_code in (401, 403):
+            return await _probe_agent_via_session()
+        return False, f"GET deployment -> {response.status_code}: {response.text[:160]}"
+    except Exception:
+        return await _probe_agent_via_session()
+
+
+async def _notify_owner_poll_timeout() -> None:
+    """ReadTimeout bei /v1/receive: serverseitig könnten Envelopes dequeued worden sein, ohne dass wir sie sahen."""
+    import time
+
+    import signal_client
+
+    global _poll_timeout_dm_at
+    now = time.time()
+    if now - _poll_timeout_dm_at < POLL_TIMEOUT_DM_MIN_INTERVAL_SECONDS:
+        return
+    _poll_timeout_dm_at = now
+    owner = _owner_dm_recipient()
+    if not owner:
+        return
+    try:
+        await signal_client.send(
+            [owner],
+            "⚠️ Signal-Poll (receive) ist per Timeout fehlgeschlagen — serverseitig könnten Nachrichten entnommen worden sein, "
+            "ohne dass ich sie verarbeiten konnte. Falls eine Nachricht fehlt: bitte erneut senden.",
+        )
+    except Exception:
+        pass
+
+
+async def _poll_signal() -> list[dict[str, Any]]:
+    """receive() darf den Run nie fehlschlagen lassen — bei Fehler leer zurück (Nachrichten bleiben serverseitig in der Queue)."""
+    import signal_client
+
+    try:
+        return await signal_client.receive()
+    except Exception as error:
+        logger.warning("receive() fehlgeschlagen (%s): %s — Run läuft ohne Poll weiter", type(error).__name__, str(error)[:300])
+        if "timeout" in str(error).lower():
+            await _notify_owner_poll_timeout()
+        return []
+
+
+async def _agent_health(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """TTL-gecachter Health-Check des Agent-Workers + einmalige Owner-DMs bei Down/Recovery."""
+    import time
+
+    import signal_client
+    import state_store
+
+    global _agent_probe_ok, _agent_probe_at, _agent_probe_error
+    now = time.time()
+    if _agent_probe_ok is not None and now - _agent_probe_at < AGENT_PROBE_TTL_SECONDS:
+        ok, err = _agent_probe_ok, _agent_probe_error
+    else:
+        ok, err = await _probe_agent()
+        _agent_probe_ok, _agent_probe_at, _agent_probe_error = ok, now, err
+    agent_state = state.setdefault("agent", {})
+    was_down = bool(agent_state.get("down"))
+    planned_until = float(agent_state.get("planned_restart_until") or 0)
+    result: dict[str, Any] = {"key": "agent", "status": "ok" if ok else "down"}
+    changed = was_down != (not ok)
+    if not ok:
+        result["error"] = err[:300]
+        agent_state["down"] = True
+        agent_state["down_since"] = agent_state.get("down_since") or now
+        if changed:
+            logger.warning("agent-down: %s", err[:300])
+        if not agent_state.get("down_notified") and now >= planned_until:
+            agent_state["down_notified"] = True
+            changed = True
+            owner = _owner_dm_recipient()
+            if owner:
+                try:
+                    await signal_client.send(
+                        [owner],
+                        f"⚠️ JARVIS-Agent-Worker nicht erreichbar ({err[:160]}). Ich halte den Signal-Empfang an, "
+                        "damit keine Nachrichten verloren gehen, und prüfe weiter. Mailbox/Tasks sind pausiert.",
+                    )
+                except Exception:
+                    pass
+    else:
+        if was_down:
+            logger.info("agent wieder erreichbar")
+            changed = True
+            owner = _owner_dm_recipient()
+            if owner:
+                try:
+                    await signal_client.send([owner], "✅ JARVIS-Agent wieder erreichbar — wartende Nachrichten werden jetzt verarbeitet.")
+                except Exception:
+                    pass
+        agent_state["down"] = False
+        agent_state.pop("down_notified", None)
+        agent_state.pop("down_since", None)
+    if changed:
+        try:
+            await state_store.save(state)
+        except Exception:
+            pass
+    return state, result
+
+
+def _agent_restart_interval() -> int:
+    try:
+        return int(os.environ.get("JARVIS_AGENT_RESTART_INTERVAL_SECONDS", "") or DEFAULT_AGENT_RESTART_INTERVAL_SECONDS)
+    except ValueError:
+        return DEFAULT_AGENT_RESTART_INTERVAL_SECONDS
+
+
+async def _restart_agent_deployment() -> tuple[bool, str]:
+    import httpx
+
+    key = _control_api_key()
+    if not key:
+        return False, "kein API-Key für Control-API"
+    name = _agent_deployment_name()
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            response = await http.post(
+                f"{CONTROL_API_BASE}/v1/workflows/deployments/{name}/restart", headers={"Authorization": f"Bearer {key}"}
+            )
+        if response.status_code in (200, 201, 202):
+            return True, response.text[:160]
+        return False, f"POST restart -> {response.status_code}: {response.text[:160]}"
+    except Exception as error:
+        return False, f"{type(error).__name__}: {str(error)[:160]}"
+
+
+async def _agent_restart_check(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Präventiver Restart des Agent-Deployments (default alle 4h), damit eine abgestorbene Instanz nicht lange unbemerkt bleibt."""
+    import time
+
+    import state_store
+
+    interval = _agent_restart_interval()
+    if interval <= 0:
+        return state, None
+    now = time.time()
+    last = float(state.get("agent_restart_last") or 0)
+    if not last:
+        # Erster Lauf nach Bridge-Redeploy: Timer neu starten statt sofort zu restarten.
+        state["agent_restart_last"] = now
+        try:
+            await state_store.save(state)
+        except Exception:
+            pass
+        return state, None
+    if now - last < interval:
+        return state, None
+    state["agent_restart_last"] = now
+    state.setdefault("agent", {})["planned_restart_until"] = now + PLANNED_RESTART_WINDOW_SECONDS
+    try:
+        await state_store.save(state)
+    except Exception:
+        pass
+    ok, msg = await _restart_agent_deployment()
+    if ok:
+        logger.info("geplanter Agent-Restart ausgeführt (%s): %s", _agent_deployment_name(), msg)
+    else:
+        logger.warning("geplanter Agent-Restart fehlgeschlagen: %s", msg)
+    return state, {"key": "agent-restart", "status": "ok" if ok else "error", "error": msg[:300]}
+
+
+async def _process_message_guarded(message: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """409/no-worker abfangen: Nachricht war schon dequeued -> Owner-DM mit Inhalt, kein Retry-Sturm."""
+    import time
+
+    global _agent_probe_ok, _agent_probe_at, _agent_probe_error
+    try:
+        return await _process_message(message, state)
+    except Exception as error:
+        if not _is_agent_down_error(error):
+            raise
+        _agent_probe_ok, _agent_probe_at, _agent_probe_error = False, time.time(), str(error)[:300]
+        state.setdefault("agent", {})["down"] = True
+        logger.warning("process_message %s: agent down (%s)", message.get("key"), str(error)[:200])
+        owner = _owner_dm_recipient()
+        if owner:
+            try:
+                import signal_client
+
+                preview = (message.get("text") or "").strip()[:200] or "(nur Anhänge)"
+                await signal_client.send(
+                    [owner],
+                    f"⚠️ Nachricht von {message.get('sender_name', '?')} konnte nicht verarbeitet werden (Agent-Worker down, 409). "
+                    f"Inhalt: „{preview}“ — bitte ggf. erneut senden.",
+                )
+            except Exception:
+                pass
+        detail = {"key": message.get("key"), "status": "agent-down", "error": str(error)[:200], "chat": message.get("chat_key")}
+        return detail, state
 
 
 def _mailbox_settings() -> tuple[int, int]:
@@ -307,9 +577,7 @@ def _image_payload_from_event(event: Any) -> Any | None:
 
 @workflows.activity(start_to_close_timeout=timedelta(seconds=60), retry_policy_max_attempts=2)
 async def poll_signal_activity() -> list[dict[str, Any]]:
-    import signal_client
-
-    return await signal_client.receive()
+    return await _poll_signal()
 
 
 async def _process_message(message: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -398,7 +666,9 @@ async def _process_message(message: dict[str, Any], state: dict[str, Any]) -> tu
     session_key = chat_state.get("session_key") or f"signal-chat:{message['chat_key']}"
     try:
         session = await agent.start_session(idempotency_key=session_key)
-    except Exception:
+    except Exception as error:
+        if _is_agent_down_error(error):
+            raise  # 409 no worker: Epoch-Retry wuerde sofort wieder 409 liefern
         if user_api_key:
             _agent_registered = False
             await ensure_agent_registered(agent_name, user_api_key)
@@ -434,7 +704,9 @@ async def _process_message(message: dict[str, Any], state: dict[str, Any]) -> tu
 
     try:
         record = await _run_with_retry(session, f"signal-msg:{message['key']}")
-    except Exception:
+    except Exception as error:
+        if _is_agent_down_error(error):
+            raise
         # Session evtl. an einen toten Worker gebunden (503 / OutcomeUnknown nach Redeploy):
         # neue Session ueber Epoch-Schluessel versuchen, damit der Chat wieder antwortet.
         if user_api_key:
@@ -554,9 +826,21 @@ async def load_state_activity() -> dict[str, Any]:
     return await state_store.load()
 
 
+@workflows.activity(start_to_close_timeout=timedelta(seconds=90), retry_policy_max_attempts=2)
+async def agent_health_activity(state: dict[str, Any]) -> dict[str, Any]:
+    state, result = await _agent_health(state)
+    return {"state": state, "result": result}
+
+
+@workflows.activity(start_to_close_timeout=timedelta(seconds=90), retry_policy_max_attempts=1)
+async def agent_restart_check_activity(state: dict[str, Any]) -> dict[str, Any]:
+    state, result = await _agent_restart_check(state)
+    return {"state": state, "result": result}
+
+
 @workflows.activity(start_to_close_timeout=timedelta(minutes=20), retry_policy_max_attempts=2)
 async def process_message_activity(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-    detail, new_state = await _process_message(message, state)
+    detail, new_state = await _process_message_guarded(message, state)
     return {"state": new_state, "result": detail}
 
 
@@ -801,8 +1085,6 @@ async def outbox_check_activity(state: dict[str, Any]) -> dict[str, Any]:
 class SignalBridgeWorkflow:
     @workflows.workflow.entrypoint
     async def run(self, input: BridgeInput) -> BridgeOutput:
-        messages = await poll_signal_activity()
-        messages = messages[: input.max_messages]
         # State wird EINMAL pro Run geladen und an die Activities durchgereicht ( jede Activity
         # hat frueher selbst geladen -> 3 HTTP-Calls pro Activity gespart). Jede Activity gibt
         # {"state": ..., "result": ...} zurueck, damit der naechste Schritt den frischen Stand sieht.
@@ -811,13 +1093,38 @@ class SignalBridgeWorkflow:
         except Exception:
             state = {"chats": {}, "log": [], "processed": []}
         details: list[dict[str, Any]] = []
-        for message in messages:
+        # Agent-Health-Guard VOR dem Signal-Poll: /v1/receive dequeued destructiv — bei "down"
+        # wird NICHT gepollt, damit Nachrichten in der Signal-Queue bleiben (kein Verlust).
+        try:
+            out = await agent_health_activity(state)
+            state = out.get("state") or state
+            health = out.get("result") or {"status": "ok"}
+        except Exception as error:
+            health = {"status": "probe-error", "error": str(error)[:200]}
+        agent_down = health.get("status") == "down"
+        messages: list[dict[str, Any]] = []
+        if agent_down:
+            details.append(health)
+            logger.info("agent down -> Signal-Poll wird uebersprungen (Nachrichten bleiben in der Queue)")
+        else:
+            if health.get("status") != "ok":
+                details.append(health)
             try:
-                out = await process_message_activity(message, state)
+                out = await agent_restart_check_activity(state)
                 state = out.get("state") or state
-                details.append(out.get("result") or {"key": message.get("key"), "status": "error"})
+                if out.get("result"):
+                    details.append(out["result"])
             except Exception as error:
-                details.append({"key": message.get("key"), "status": "error", "error": str(error)[:300]})
+                details.append({"key": "agent-restart", "status": "error", "error": str(error)[:200]})
+            messages = await poll_signal_activity()
+            messages = messages[: input.max_messages]
+            for message in messages:
+                try:
+                    out = await process_message_activity(message, state)
+                    state = out.get("state") or state
+                    details.append(out.get("result") or {"key": message.get("key"), "status": "error"})
+                except Exception as error:
+                    details.append({"key": message.get("key"), "status": "error", "error": str(error)[:300]})
         if state.get("outbox"):
             try:
                 out = await outbox_check_activity(state)
@@ -825,19 +1132,20 @@ class SignalBridgeWorkflow:
                 details.extend(out.get("result") or [])
             except Exception as error:
                 details.append({"key": "outbox", "status": "error", "error": str(error)[:300]})
-        try:
-            out = await mailbox_check_activity(state)
-            state = out.get("state") or state
-            if out.get("result"):
-                details.append(out["result"])
-        except Exception as error:
-            details.append({"key": "mailbox", "status": "error", "error": str(error)[:300]})
-        if any(task.get("status") in ("pending", "running") for task in state.get("tasks", [])):
+        if not agent_down:
             try:
-                out = await tasks_check_activity(state)
+                out = await mailbox_check_activity(state)
                 state = out.get("state") or state
-                details.extend(out.get("result") or [])
+                if out.get("result"):
+                    details.append(out["result"])
             except Exception as error:
-                details.append({"key": "tasks", "status": "error", "error": str(error)[:300]})
+                details.append({"key": "mailbox", "status": "error", "error": str(error)[:300]})
+            if any(task.get("status") in ("pending", "running") for task in state.get("tasks", [])):
+                try:
+                    out = await tasks_check_activity(state)
+                    state = out.get("state") or state
+                    details.extend(out.get("result") or [])
+                except Exception as error:
+                    details.append({"key": "tasks", "status": "error", "error": str(error)[:300]})
         processed = sum(1 for detail in details if detail.get("status") == "ok")
         return BridgeOutput(received=len(messages), processed=processed, details=details)

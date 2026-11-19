@@ -181,12 +181,40 @@ Danach Commit pushen und erneut deployen (`agents deploy . --name jarvis …` mi
 | `JARVIS_OWNER_UUID` | ja (Bridge) | Signal-UUID des Account-Inhabers (Andre). Nur dieser bekommt Owner-DMs: 📬 Postfach-Benachrichtigungen (nur wenn MAILS > 0), ⚠️ Fehler-DMs (z. B. Task-Fehler) und die einmalige Warnung bei leerer/fail-closed Allowlist. Es gibt keinen hartkodierten Default mehr im Repo – als Secret `JARVIS_OWNER_UUID` an die Bridge binden, sonst sind Owner-DMs deaktiviert (ein Hinweis im Log) |
 | `JARVIS_MAILBOX_INTERVAL_SECONDS` | nein | Intervall des autonomen Postfach-Checks in Sekunden, Standard `3600` (1× pro Stunde) |
 | `JARVIS_MAILBOX_MAX_MESSAGES` | nein | max. unbearbeitete Mails pro Postfach-Check, Standard `10` |
+| `JARVIS_AGENT_RESTART_INTERVAL_SECONDS` | nein | Präventiver Restart des Agent-Deployments durch die Bridge via `POST /v1/workflows/deployments/{JARVIS_DEPLOYMENT_NAME|JARVIS_AGENT_NAME}/restart`, Standard `14400` (alle 4 h), `0` = aus. Schützt gegen abgestorbene Worker-Instanzen; während des Restart-Fensters pausiert der Health-Guard den Signal-Poll (kein Nachrichtenverlust) |
 | `JARVIS_SEARCH_MODEL` | nein | Modell für web_search/search_knowledge/read_document-QA, Standard `mistral-medium-latest` |
 | `JARVIS_IMAGE_MODEL` | nein | Modell für generate_image, Standard `mistral-large-4` |
 | `JARVIS_VISION_MODEL` | nein | Modell für describe_image (Bildverstehen), Standard `mistral-large-4` |
 | `JARVIS_CLASSIFY_MODEL` | nein | Modell für Dokument-Klassifizierung (Auto-Ablegen), Standard `mistral-small-latest` |
 | `JARVIS_TASK_PARSE_MODEL` | nein | Modell für Zeitangaben-Parsing in schedule_task, Standard `mistral-small-latest` |
 | `JARVIS_AUDIO_MODEL` | nein | Modell für Sprachnachrichten-Transkription, Standard `voxtral-mini-latest` |
+
+## Runbook: Agent-Worker ausgefallen (Deployment `jarvis`)
+
+**Symptome**: Deployment `jarvis` in der Console `phase=failed` / „Service is unhealthy“ mit 0 Workern;
+Bridge-Logs enthalten `409 ... no worker serves its workflow 'jarvis'`; Bridge-Runs dauern ~4 Min
+(Activity-Retries) oder liefern `agent: down` / `status=agent-down` in den Run-Details.
+
+**Eingebauter Schutz (Health-Guard)**: Vor jedem Signal-Poll prüft die Bridge per
+`GET /v1/workflows/deployments/jarvis` (`status.ready_replicas`, TTL 45 s), ob der Agent-Worker lebt.
+Bei „down“ wird `/v1/receive` **nicht** aufgerufen → Nachrichten bleiben in der Signal-Queue
+(kein Verlust, da receive destruktiv dequeued), Mailbox/Tasks pausieren, der Owner bekommt einmalig
+eine ⚠️-DM (bei Recovery eine ✅-DM). Ein 409-Race (Nachricht bereits dequeued, als der Worker starb)
+wird in `process_message_activity` abgefangen: schnelles `status=agent-down`-Result (kein Retry-Sturm)
+plus Owner-DM mit Absender + Text-Vorschau. Außerdem failt ein `receive()`-Fehler den Run nicht mehr
+(ReadTimeout → ⚠️-Owner-DM wegen möglichem serverseitigem Dequeue).
+
+**Präventiver Restart**: Alle `JARVIS_AGENT_RESTART_INTERVAL_SECONDS` (default 4 h) ruft die Bridge
+`POST /v1/workflows/deployments/jarvis/restart` (mit `JARVIS_AGENT_API_KEY`) — gegen abgestorbene
+Instanzen (Idle/OOM). Während des geplanten Restart-Fensters (`agent.planned_restart_until`, 7 min)
+unterdrückt der Guard die ⚠️-DM.
+
+**Manueller Fix** (wenn der Worker nicht von allein hochkommt): Console → Workflows → Deployment
+`jarvis` → **Stop → Start** (ein Redeploy auf dem *gleichen* Commit ist bei `failed` ein No-Op!).
+Per MCP: `stop_workflow_deployment` + `start_workflow_deployment` (`deployment_name="jarvis"`), dann
+`wait_workflow_deployment_ready`. Danach prüfen: `list_executions` (keine >5 Min hängenden RUNNING-Runs,
+sonst `terminate_workflow_execution` mit `expected_deployment_name="jarvis-bridge"`) und Bridge-Runs
+wieder ~7–13 s.
 
 ## Entwicklung
 

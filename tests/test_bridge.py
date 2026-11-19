@@ -275,3 +275,181 @@ def test_image_payload_from_event():
     assert bridge._image_payload_from_event(Event(entry=Entry(structured_content={"prompt": "katze"}))) is None
     assert bridge._image_payload_from_event(Event(entry=None)) is None
     assert bridge._image_payload_from_event(object()) is None
+
+
+def test_is_agent_down_error():
+    assert bridge._is_agent_down_error(
+        Exception(
+            "Sessions API answered 409 Conflict to POST /v2/agents/sessions: Agent 'jarvis' cannot start a session "
+            "because no worker serves its workflow 'jarvis' on deployment 'jarvis'"
+        )
+    )
+    assert bridge._is_agent_down_error(Exception("409 Conflict"))
+    assert not bridge._is_agent_down_error(Exception("httpx.ReadTimeout"))
+    assert not bridge._is_agent_down_error(RuntimeError("boom"))
+
+
+def _reset_agent_probe(monkeypatch):
+    monkeypatch.setattr(bridge, "_agent_probe_ok", None)
+    monkeypatch.setattr(bridge, "_agent_probe_at", 0.0)
+    monkeypatch.setattr(bridge, "_agent_probe_error", "")
+
+
+def test_agent_health_down_dm_once_then_recovery(monkeypatch):
+    import signal_client
+
+    sends = []
+
+    async def fake_send(recipients, message, attachments=None):
+        sends.append((recipients, message))
+
+    async def fake_save(state):
+        return None
+
+    monkeypatch.setattr(signal_client, "send", fake_send)
+    monkeypatch.setattr(state_store, "save", fake_save)
+    monkeypatch.setattr(bridge, "_owner_dm_recipient", lambda: "owner-uuid")
+    _reset_agent_probe(monkeypatch)
+
+    async def probe_down():
+        return (False, "deployment jarvis: ready_replicas=0 phase=failed")
+
+    monkeypatch.setattr(bridge, "_probe_agent", probe_down)
+    state = {}
+    state, result = asyncio.run(bridge._agent_health(state))
+    assert result["status"] == "down" and result["key"] == "agent"
+    assert state["agent"]["down"] is True and state["agent"]["down_notified"] is True
+    assert len(sends) == 1 and sends[0][0] == ["owner-uuid"] and "nicht erreichbar" in sends[0][1]
+    # zweiter Lauf nutzt den Probe-Cache -> kein erneuter DM
+    state, result = asyncio.run(bridge._agent_health(state))
+    assert result["status"] == "down" and len(sends) == 1
+
+    # Recovery
+    async def probe_ok():
+        return (True, "ready_replicas=1")
+
+    monkeypatch.setattr(bridge, "_probe_agent", probe_ok)
+    monkeypatch.setattr(bridge, "_agent_probe_ok", None)
+    monkeypatch.setattr(bridge, "_agent_probe_at", 0.0)
+    state, result = asyncio.run(bridge._agent_health(state))
+    assert result["status"] == "ok"
+    assert state["agent"]["down"] is False
+    assert "down_notified" not in state["agent"]
+    assert len(sends) == 2 and "wieder erreichbar" in sends[1][1]
+
+
+def test_agent_health_down_dm_suppressed_during_planned_restart(monkeypatch):
+    import time
+
+    import signal_client
+
+    sends = []
+
+    async def fake_send(recipients, message, attachments=None):
+        sends.append(message)
+
+    async def fake_save(state):
+        return None
+
+    monkeypatch.setattr(signal_client, "send", fake_send)
+    monkeypatch.setattr(state_store, "save", fake_save)
+    monkeypatch.setattr(bridge, "_owner_dm_recipient", lambda: "owner-uuid")
+    _reset_agent_probe(monkeypatch)
+
+    async def probe_down():
+        return (False, "ready_replicas=0 phase=failed")
+
+    monkeypatch.setattr(bridge, "_probe_agent", probe_down)
+    state = {"agent": {"planned_restart_until": time.time() + 300}}
+    state, result = asyncio.run(bridge._agent_health(state))
+    assert result["status"] == "down"
+    assert sends == []  # geplanter Restart -> kein Owner-DM
+    assert state["agent"]["down"] is True
+
+
+def test_poll_signal_swallows_error_and_notifies_on_timeout(monkeypatch):
+    import signal_client
+
+    async def boom_timeout():
+        raise RuntimeError("httpx.ReadTimeout: ReadTimeout")
+
+    monkeypatch.setattr(signal_client, "receive", boom_timeout)
+    notes = []
+
+    async def fake_notify():
+        notes.append(1)
+
+    monkeypatch.setattr(bridge, "_notify_owner_poll_timeout", fake_notify)
+    assert asyncio.run(bridge._poll_signal()) == []
+    assert len(notes) == 1
+
+    async def boom_other():
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(signal_client, "receive", boom_other)
+    assert asyncio.run(bridge._poll_signal()) == []
+    assert len(notes) == 1  # kein Timeout -> keine Owner-DM
+
+
+def test_agent_restart_check(monkeypatch):
+    calls = []
+
+    async def fake_restart():
+        calls.append(1)
+        return True, "restarted"
+
+    async def fake_save(state):
+        return None
+
+    monkeypatch.setattr(bridge, "_restart_agent_deployment", fake_restart)
+    monkeypatch.setattr(state_store, "save", fake_save)
+    monkeypatch.setenv("JARVIS_AGENT_RESTART_INTERVAL_SECONDS", "0")
+    state, result = asyncio.run(bridge._agent_restart_check({}))
+    assert result is None and calls == []
+
+    monkeypatch.setenv("JARVIS_AGENT_RESTART_INTERVAL_SECONDS", "14400")
+    state = {}
+    state, result = asyncio.run(bridge._agent_restart_check(state))
+    assert result is None and calls == [] and state["agent_restart_last"] > 0  # erster Lauf initialisiert nur
+
+    state["agent_restart_last"] -= 20000  # fällig
+    state, result = asyncio.run(bridge._agent_restart_check(state))
+    assert result["status"] == "ok" and result["key"] == "agent-restart" and len(calls) == 1
+    assert state["agent"]["planned_restart_until"] > state["agent_restart_last"]
+
+
+def test_process_message_guarded_agent_down_dm_and_no_reraise(monkeypatch):
+    import signal_client
+
+    async def fake_process_down(message, state):
+        raise Exception(
+            "Sessions API answered 409 Conflict to POST /v2/agents/sessions: Agent 'jarvis' cannot start a session "
+            "because no worker serves its workflow 'jarvis' on deployment 'jarvis'"
+        )
+
+    monkeypatch.setattr(bridge, "_process_message", fake_process_down)
+    sends = []
+
+    async def fake_send(recipients, message, attachments=None):
+        sends.append(message)
+
+    monkeypatch.setattr(signal_client, "send", fake_send)
+    monkeypatch.setattr(bridge, "_owner_dm_recipient", lambda: "owner-uuid")
+    monkeypatch.setattr(bridge, "_agent_probe_ok", True)
+    msg = _message(text="Hey")
+    detail, state = asyncio.run(bridge._process_message_guarded(msg, {}))
+    assert detail["status"] == "agent-down" and detail["key"] == "k1"
+    assert state["agent"]["down"] is True
+    assert bridge._agent_probe_ok is False
+    assert len(sends) == 1 and "Hey" in sends[0] and "Melina Krug" in sends[0]
+
+    async def fake_process_other(message, state):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bridge, "_process_message", fake_process_other)
+    raised = False
+    try:
+        asyncio.run(bridge._process_message_guarded(msg, {}))
+    except RuntimeError:
+        raised = True
+    assert raised
